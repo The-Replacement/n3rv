@@ -14,27 +14,8 @@ from n3rv.init.context import Stack
 logger = logging.getLogger("n3rv.init.analyzer.mcp")
 
 
-# ── Universal MCP servers (every project) ──────────────────────────
-
-_UNIVERSAL_SERVERS: list[MCPServerInfo] = [
-    MCPServerInfo(
-        name="github",
-        type="local",
-        command=[
-            "bash",
-            "-c",
-            'GITHUB_PERSONAL_ACCESS_TOKEN="${GITHUB_PERSONAL_ACCESS_TOKEN:-$(gh auth token 2>/dev/null)}" exec npx -y @modelcontextprotocol/server-github',  # noqa: E501
-        ],
-        environment={},  # token auto-fetched from gh auth if not in env
-        description="GitHub integration (repos, issues, PRs)",
-    ),
-    MCPServerInfo(
-        name="context7",
-        type="local",
-        command=["npx", "-y", "@upstash/context7-mcp@latest"],
-        description="Up-to-date documentation retrieval",
-    ),
-]
+# GitHub and Context7 are intentionally not project recommendations. Project
+# config inherits the user's pinned global servers instead of overriding them.
 
 # ── Web frontend MCP servers ───────────────────────────────────────
 
@@ -76,11 +57,7 @@ class MCPRecommender:
         seen: set[str] = set()
         results: list[MCPServerInfo] = []
 
-        # Always include universal servers
-        for srv in _UNIVERSAL_SERVERS:
-            if srv.name not in seen:
-                seen.add(srv.name)
-                results.append(srv)
+        # Global GitHub and Context7 servers are inherited, not duplicated here.
 
         # Web frontend
         if structure.has_web_files or stack == Stack.NODE:

@@ -10,16 +10,16 @@ from n3rv.init.context import Stack
 
 
 class TestMCPRecommender:
-    def test_universal_servers_always_included(self, tmp_path: Path) -> None:
-        """Every project, regardless of stack, gets github and context7."""
+    def test_secured_global_servers_are_inherited(self, tmp_path: Path) -> None:
+        """Project recommendations never override global GitHub or Context7 servers."""
         structure = StructureInfo()
         recommender = MCPRecommender()
 
         for stack in Stack:
             servers = recommender.detect(tmp_path, stack, structure)
             names = {s.name for s in servers}
-            assert "github" in names, f"Missing github for stack={stack}"
-            assert "context7" in names, f"Missing context7 for stack={stack}"
+            assert "github" not in names, f"GitHub override generated for stack={stack}"
+            assert "context7" not in names, f"Context7 override generated for stack={stack}"
 
     def test_web_project_gets_chrome_devtools(self, tmp_path: Path) -> None:
         """Projects with web files get chrome-devtools MCP server."""
@@ -72,14 +72,12 @@ class TestMCPRecommender:
         structure = StructureInfo(has_web_files=True)
         recommender = MCPRecommender()
 
-        # Python + web should have universals + sequential-thinking + chrome-devtools
+        # Python + web should have sequential-thinking + chrome-devtools.
         servers = recommender.detect(tmp_path, Stack.PYTHON, structure)
         names = [s.name for s in servers]
 
-        # Check no duplicates
         assert len(names) == len(set(names)), f"Duplicates found: {names}"
-        # Expected: github, context7, sequential-thinking, chrome-devtools
-        assert len(servers) == 4
+        assert len(servers) == 2
 
     def test_servers_have_required_fields(self, tmp_path: Path) -> None:
         """All recommended servers have type and command (for local) or url (for remote)."""
@@ -95,20 +93,16 @@ class TestMCPRecommender:
             else:
                 assert srv.url, f"Remote server {srv.name} missing url"
 
-    def test_universal_servers_consistent_across_stacks(self, tmp_path: Path) -> None:
-        """The universal servers (github, context7) have identical config across stacks."""
-        structure = StructureInfo()
+    def test_no_unpinned_global_server_commands(self, tmp_path: Path) -> None:
+        """Recommendations cannot reintroduce the removed overrides under another name."""
+        structure = StructureInfo(has_web_files=True)
         recommender = MCPRecommender()
+        forbidden_packages = ("@modelcontextprotocol/server-github", "@upstash/context7-mcp")
 
-        first = None
         for stack in Stack:
             servers = recommender.detect(tmp_path, stack, structure)
-            universal = [s for s in servers if s.name in ("github", "context7")]
-            current = {(s.name, tuple(s.command) if s.command else None, s.type) for s in universal}
-            if first is None:
-                first = current
-            else:
-                assert first == current, f"Universal servers differ for stack={stack}: {current} vs {first}"
+            commands = [" ".join(s.command or []) for s in servers]
+            assert all(package not in command for package in forbidden_packages for command in commands)
 
     def test_no_n3rv_servers_recommended(self, tmp_path: Path) -> None:
         """n3rv's own MCP servers are never written into project config.
@@ -127,10 +121,10 @@ class TestMCPRecommender:
             assert not leaked, f"n3rv servers leaked into scaffold for {stack}: {leaked}"
 
     def test_python_server_order(self, tmp_path: Path) -> None:
-        """Python servers are ordered: github, context7, sequential-thinking."""
+        """Python projects retain their stack-specific server after global inheritance."""
         structure = StructureInfo()
         recommender = MCPRecommender()
 
         servers = recommender.detect(tmp_path, Stack.PYTHON, structure)
         names = [s.name for s in servers]
-        assert names == ["github", "context7", "sequential-thinking"]
+        assert names == ["sequential-thinking"]

@@ -104,6 +104,16 @@ class TestMCPRecommender:
             commands = [" ".join(s.command or []) for s in servers]
             assert all(package not in command for package in forbidden_packages for command in commands)
 
+    def test_recommended_servers_are_pinned(self, tmp_path: Path) -> None:
+        """A recommended server must not float on @latest."""
+        structure = StructureInfo(has_web_files=True)
+        recommender = MCPRecommender()
+
+        for stack in Stack:
+            for server in recommender.detect(tmp_path, stack, structure):
+                for command in server.command or []:
+                    assert not command.endswith("@latest"), f"Unpinned MCP package: {command}"
+
     def test_no_n3rv_servers_recommended(self, tmp_path: Path) -> None:
         """n3rv's own MCP servers are never written into project config.
 

@@ -23,7 +23,7 @@ _WEB_SERVERS: list[MCPServerInfo] = [
     MCPServerInfo(
         name="chrome-devtools",
         type="local",
-        command=["npx", "-y", "chrome-devtools-mcp@latest"],
+        command=["npx", "-y", "chrome-devtools-mcp@1.13.0"],
         description="Chrome DevTools for debugging and inspecting web pages",
     ),
 ]
@@ -37,7 +37,7 @@ _PYTHON_SERVERS: list[MCPServerInfo] = [
         command=[
             "npx",
             "-y",
-            "@modelcontextprotocol/server-sequential-thinking@latest",
+            "@modelcontextprotocol/server-sequential-thinking@2.1.1",
         ],
         description="Complex reasoning and step-by-step analysis",
     ),

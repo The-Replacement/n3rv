@@ -135,7 +135,7 @@ SDD_PHASE_MAP: dict[str, dict] = {
     },
     "sdd-task-planner": {
         "phase_description": "Break SDD design into ordered list of atomic, reviewable implementation tasks.",
-        "phase_model": "opencode-go/qwen3.5-plus",
+        "phase_model": "opencode-go/qwen3.7-plus",
         "phase_skill": "sdd-tasks",
         "phase_edit_denied": True,
         "phase_steps": [
@@ -151,7 +151,7 @@ SDD_PHASE_MAP: dict[str, dict] = {
     },
     "sdd-verifier": {
         "phase_description": "Verify implementation against spec acceptance criteria. Produces pass/fail verdict.",
-        "phase_model": "opencode-go/kimi-k2.6",
+        "phase_model": "opencode-go/kimi-k2.7-code",
         "phase_skill": "sdd-verify",
         "phase_edit_denied": False,
         "phase_steps": [
@@ -166,7 +166,7 @@ SDD_PHASE_MAP: dict[str, dict] = {
     },
     "sdd-archiver": {
         "phase_description": "Archive all SDD artifacts into a single completed record in memory.",
-        "phase_model": "opencode-go/qwen3.5-plus",
+        "phase_model": "opencode-go/qwen3.7-plus",
         "phase_skill": "sdd-archive",
         "phase_edit_denied": True,
         "phase_steps": [

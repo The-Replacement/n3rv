@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from n3rv.init import run_init
@@ -75,6 +76,51 @@ class TestInit:
         assert "sdd-designer" in agent_content
         assert "git-ops" in agent_content
         assert "github-ops" in agent_content
+
+    def test_generated_agents_use_available_models(self, tmp_path: Path) -> None:
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        # Concrete IDs returned by `opencode models` on 2026-11-14. Skill
+        # frontmatter intentionally uses abstract effort tiers and is not scanned.
+        available_models = {
+            "opencode-go/deepseek-v4-pro",
+            "opencode-go/kimi-k2.7-code",
+            "opencode-go/qwen3.7-plus",
+            "opencode/nemotron-3.5-super-vl-free",
+        }
+        agent_models = {}
+        for agent_path in (tmp_path / ".opencode" / "agents").glob("*.md"):
+            frontmatter = agent_path.read_text(encoding="utf-8").split("---", 2)[1]
+            for line in frontmatter.splitlines():
+                if line.startswith("model: "):
+                    agent_models[agent_path.name] = line.removeprefix("model: ")
+
+        assert agent_models
+        assert set(agent_models.values()) <= available_models
+
+    def test_generated_configs_inherit_secured_global_mcp_servers(self, tmp_path: Path) -> None:
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        for filename in ("opencode.json", "opencode.template.json"):
+            data = json.loads((tmp_path / filename).read_text(encoding="utf-8"))
+            mcp_servers = data.get("mcp", {})
+            assert "github" not in mcp_servers
+            assert "context7" not in mcp_servers
+            serialized_servers = json.dumps(mcp_servers)
+            assert "@modelcontextprotocol/server-github" not in serialized_servers
+            assert "@upstash/context7-mcp" not in serialized_servers
+
+    def test_generated_roadmap_agents_use_canonical_project(self, tmp_path: Path) -> None:
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        for agent_name in ("n3rv", "project-ops"):
+            content = (tmp_path / ".opencode" / "agents" / f"{agent_name}.md").read_text(encoding="utf-8")
+            assert "project #1" in content
+            assert "project #2" not in content
+            assert "projectV2(number:1)" in content
 
     def test_commands_created_for_detected_tools(self, tmp_path: Path) -> None:
         _write_fastapi_pyproject(tmp_path)

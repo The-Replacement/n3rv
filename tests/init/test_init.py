@@ -99,6 +99,14 @@ class TestInit:
         assert agent_models
         assert set(agent_models.values()) <= available_models
 
+    def test_generated_agents_md_keeps_the_language_rule(self, tmp_path: Path) -> None:
+        """Regeneration must not drop the org-wide language convention."""
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+        assert "Language: English everywhere" in content
+
     def test_generated_configs_inherit_secured_global_mcp_servers(self, tmp_path: Path) -> None:
         _write_fastapi_pyproject(tmp_path)
         run_init(tmp_path, project_name=None, stack_override=None, force=True)

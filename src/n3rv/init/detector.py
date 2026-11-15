@@ -16,12 +16,12 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from n3rv.init.analyzer.structure import has_web_tree
 from n3rv.init.context import Stack
 
 logger = logging.getLogger("n3rv.init.detector")
 
 _COMPOSE_FILES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
-_WEB_SUFFIXES = frozenset({".html", ".htm", ".css", ".js", ".mjs", ".cjs"})
 
 
 @dataclass
@@ -147,18 +147,9 @@ def _is_multi_stack(root: Path) -> bool:
         signals += 1
     if any(root.glob("*.sh")) or ((root / "scripts").is_dir() and any((root / "scripts").glob("*.sh"))):
         signals += 1
-    if _has_web_tree(root):
+    if has_web_tree(root):
         signals += 1
     return signals >= 2
-
-
-def _has_web_tree(root: Path) -> bool:
-    if any(entry.is_file() and entry.suffix.lower() in _WEB_SUFFIXES for entry in root.iterdir()):
-        return True
-    web = root / "web"
-    if web.is_dir():
-        return any(path.suffix.lower() in _WEB_SUFFIXES for path in web.rglob("*") if path.is_file())
-    return False
 
 
 def _extract_from_pyproject(path: Path) -> str | None:

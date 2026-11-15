@@ -5,9 +5,14 @@ decisions that detection used to make at render time - stack, project name, the
 component families, the MCP server set - so that "what will n3rv do" stops
 depending on which branch happens to be checked out.
 
-Schema v1 is deliberately explicit: there is no ``all`` sentinel. A skill or
-server shipped by a later n3rv appears in a plan only after someone adds it
-here.
+Schema v2 adds three declarations on top of v1: ``detection.requires_python``
+(a detected pin), ``deployment.target`` and ``tiers`` (operator decisions,
+defaulting to v1 behavior). Schema 1 files load under v2 code with defaults
+filled in memory; ``n3rv state migrate`` rewrites them on disk.
+
+Schema v1 was already deliberately explicit: there is no ``all`` sentinel. A
+skill or server shipped by a later n3rv appears in a plan only after someone
+adds it here.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from n3rv.init import ALWAYS_ON_FAMILY, DECLARABLE_FAMILIES, FILE_MANIFEST, fami
 from n3rv.init.context import Stack
 from n3rv.init.detector import detect_stack
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 STATE_DIR = ".n3rv"
 STATE_FILENAME = "state.yaml"
@@ -120,6 +125,35 @@ class Detection(BaseModel):
     structure: StructureState = Field(default_factory=StructureState)
     frameworks: list[FrameworkState] = Field(default_factory=list)
     tools: list[ToolState] = Field(default_factory=list)
+    requires_python: str | None = None
+
+
+class Deployment(BaseModel):
+    """Declared deployment topology (an operator decision, not a detection).
+
+    ``mainframe`` keeps the conservative default: a repo that deploys but did
+    not declare must still fail loud in ``doctor --strict``. ``none`` is the
+    declaration "this repository is not deployed"; it wins over a stale remote.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    target: Literal["mainframe", "none"] = "mainframe"
+
+
+class Tiers(BaseModel):
+    """Always-on tiers a project may decline (an operator decision).
+
+    All-True reproduces schema v1 behavior: every always-on output is
+    generated. The floor (AGENTS.md + opencode.json) is not represented here -
+    it is never declinable.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    runtime: bool = True
+    spec_kit: bool = True
+    tooling: bool = True
 
 
 class BoardTarget(BaseModel):
@@ -134,11 +168,13 @@ class ProjectState(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    schema_version: Literal[1] = Field(default=SCHEMA_VERSION, alias="schema")
+    schema_version: Literal[1, 2] = Field(default=SCHEMA_VERSION, alias="schema")
     project: ProjectIdentity
     components: Components = Field(default_factory=Components)
     detection: Detection = Field(default_factory=Detection)
     mcp: McpState = Field(default_factory=McpState)
+    deployment: Deployment = Field(default_factory=Deployment)
+    tiers: Tiers = Field(default_factory=Tiers)
     board: BoardTarget | None = None
 
     def to_yaml(self) -> str:
@@ -159,9 +195,14 @@ def state_path(root: Path) -> Path:
 def load_state(root: Path) -> ProjectState:
     """Load and validate the declared state.
 
+    Schema 1 files are upgraded to schema 2 in memory (new fields get their
+    v1-behavior defaults); the on-disk file is only rewritten by
+    ``n3rv state migrate``.
+
     Raises:
-        StateError: the file is missing, is not valid YAML, or violates the
-            schema. A typo must never silently do nothing.
+        StateError: the file is missing, is not valid YAML, violates the
+            schema, or declares an unsupported schema version. A typo must
+            never silently do nothing.
     """
     path = state_path(root)
     if not path.is_file():
@@ -172,10 +213,25 @@ def load_state(root: Path) -> ProjectState:
         raise StateError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise StateError(f"{path} must contain a mapping at the top level")
-    try:
-        return ProjectState.model_validate(raw)
-    except ValidationError as exc:
-        raise StateError(f"{path} does not match schema {SCHEMA_VERSION}:\n{exc}") from exc
+    schema = raw.get("schema", 1)
+    if schema in (1, 2):
+        try:
+            return _upgrade_v1(raw) if schema == 1 else ProjectState.model_validate(raw)
+        except ValidationError as exc:
+            raise StateError(f"{path} does not match schema {SCHEMA_VERSION}:\n{exc}") from exc
+    raise StateError(f"{path} uses schema {schema}; this n3rv supports 1 and 2")
+
+
+def _upgrade_v1(raw: dict[str, Any]) -> ProjectState:
+    """Fill schema v2 fields at their v1-behavior defaults, in memory only.
+
+    v2 is purely additive, so model_validate fills ``requires_python``,
+    ``deployment`` and ``tiers`` from their defaults; the only explicit
+    mutation is the schema marker bump. No disk write happens here.
+    """
+    data = dict(raw)
+    data["schema"] = SCHEMA_VERSION
+    return ProjectState.model_validate(data)
 
 
 def save_state(root: Path, state: ProjectState, *, force: bool = False) -> Path:

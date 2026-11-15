@@ -1,13 +1,14 @@
 .nerv/
-.n3rv/
+.n3rv/*
+!.n3rv/state.yaml
 *.pyc
 __pycache__/
 .venv/
 .mise.toml
 dist/
 
-# N3RV — NEVER COMMIT (template-controlled)
-.n3rv/
+# N3RV — generated, never committed. The declared state is the exception: it is
+# what a reviewer reads before the generator writes anything.
 .opencode/
 .githooks/
 AGENTS.md

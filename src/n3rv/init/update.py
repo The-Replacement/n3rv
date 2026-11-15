@@ -456,6 +456,18 @@ def run_update(
     force_project_files: bool = False,
 ) -> int:
     try:
+        # Two writers on one tree is how drift starts. Once a state file exists,
+        # the reconciler owns generation and update refuses rather than
+        # silently producing a tree nobody declared.
+        declared_state = root / ".n3rv" / "state.yaml"
+        if declared_state.exists():
+            print(
+                f"✗ {declared_state} declares this project's desired state.\n"
+                "  Use 'n3rv plan' to see the difference and 'n3rv apply' to converge.",
+                flush=True,
+            )
+            return 1
+
         if not _check_nerv_migration_update(root):
             return 0
         if not _check_n3rv_migration_update(root):
@@ -518,7 +530,7 @@ def run_update(
             target_path = root / entry.output_path
             if target_path.is_file():
                 old_content = target_path.read_text(encoding="utf-8")
-            new_content = engine.render(entry.template_name, _entry_render_context(entry, render_ctx))
+            new_content = engine.render(entry.template_name, entry_render_context(entry, render_ctx))
 
             result = _process_entry(
                 entry,
@@ -578,7 +590,7 @@ def run_update(
         return 1
 
 
-def _entry_render_context(entry: UpdateEntry, render_ctx: dict) -> dict:
+def entry_render_context(entry: UpdateEntry, render_ctx: dict) -> dict:
     """Return render context for an entry, merging SDD phase metadata when applicable."""
     if entry.template_name != "opencode/agents/sdd-phase.md.j2":
         return render_ctx
@@ -597,7 +609,7 @@ def _process_entry(
     recommended_mcp: set[str] | None = None,
 ) -> UpdateResult:
     try:
-        content = engine.render(entry.template_name, _entry_render_context(entry, render_ctx))
+        content = engine.render(entry.template_name, entry_render_context(entry, render_ctx))
         target = root / entry.output_path
 
         if entry.strategy == UpdateStrategy.MARKER_MERGE:
@@ -671,31 +683,14 @@ def _handle_marker_merge(
     dry_run: bool,
     force_project_files: bool = False,
 ) -> UpdateResult:
-    content_clean = content
-    if MARKER_START in content and MARKER_END in content:
-        start_idx = content.find(MARKER_START)
-        end_idx = content.find(MARKER_END)
-        if start_idx != -1 and end_idx != -1:
-            start_line_end = content.find("\n", start_idx)
-            if start_line_end != -1:
-                content_clean = content[start_line_end + 1 : end_idx].rstrip()
+    resolution = resolve_text(entry, root, target, content)
+    if resolution.error is not None:
+        return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=resolution.error)
+    if resolution.text is None:
+        return UpdateResult(entry.output_path, entry.strategy, "SKIPPED", warning=resolution.reason)
 
-    if not target.exists():
-        if not dry_run:
-            result = write_file(
-                target,
-                content_clean,
-                force=False,
-                use_markers=True,
-                make_executable=entry.make_executable,
-            )
-            return UpdateResult(entry.output_path, entry.strategy, result.upper())
-        else:
-            return UpdateResult(entry.output_path, entry.strategy, "CREATED")
-
-    existing_content = target.read_text(encoding="utf-8")
-    warnings = validate_markers(existing_content)
-
+    existed = target.exists()
+    warnings = validate_markers(target.read_text(encoding="utf-8")) if existed else []
     for warning in warnings:
         print(f"⚠ {entry.output_path}: {warning}", flush=True)
 
@@ -707,30 +702,121 @@ def _handle_marker_merge(
             warning="project-owned file modified since last generation (use --force-project-files)",
         )
 
-    if MARKER_START in existing_content and MARKER_END in existing_content:
-        if not dry_run:
-            result = write_file(
-                target,
-                content_clean,
-                force=False,
-                use_markers=True,
-                make_executable=entry.make_executable,
-            )
-            return UpdateResult(
-                entry.output_path,
-                entry.strategy,
-                result.upper(),
-                warning=warnings[0] if warnings else None,
-            )
-        else:
-            return UpdateResult(
-                entry.output_path,
-                entry.strategy,
-                "UPDATED",
-                warning=warnings[0] if warnings else None,
-            )
+    if not dry_run:
+        _write_rendered(target, resolution.text)
+        return UpdateResult(
+            entry.output_path,
+            entry.strategy,
+            "UPDATED" if existed else "CREATED",
+            warning=warnings[0] if warnings else None,
+        )
+    return UpdateResult(
+        entry.output_path,
+        entry.strategy,
+        "UPDATED" if existed else "CREATED",
+        warning=warnings[0] if warnings else None,
+    )
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """What a strategy would write, computed without touching the disk.
+
+    ``text`` is None when the strategy would write nothing; ``reason`` says why.
+    ``notes`` carries strategy-level information the caller may print (for the
+    JSON merge it is the list of MCP server reconciliation changes).
+    """
+
+    text: str | None
+    reason: str | None = None
+    notes: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def resolve_text(
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    rendered: str,
+    *,
+    recommended_mcp: set[str] | None = None,
+) -> Resolution:
+    """Resolve what ``entry`` would write to ``target``, without writing.
+
+    Pure with respect to the filesystem: it may read, never write. This is the
+    single place that knows how each strategy turns rendered content into file
+    bytes, so ``update`` and ``plan`` cannot drift apart.
+    """
+    if entry.strategy == UpdateStrategy.MARKER_MERGE:
+        return _resolve_marker_merge(target, rendered)
+    if entry.strategy == UpdateStrategy.JSON_MERGE:
+        return _resolve_json_merge(root, target, rendered, recommended_mcp)
+    if entry.strategy == UpdateStrategy.CREATE_IF_MISSING and target.exists():
+        return Resolution(None, reason="already exists")
+    return Resolution(rendered)
+
+
+def _strip_marker_region(content: str) -> str:
+    """Rendered content without the managed region wrapper, if it has one."""
+    if MARKER_START in content and MARKER_END in content:
+        start_idx = content.find(MARKER_START)
+        end_idx = content.find(MARKER_END)
+        if start_idx != -1 and end_idx != -1:
+            start_line_end = content.find("\n", start_idx)
+            if start_line_end != -1:
+                return content[start_line_end + 1 : end_idx].rstrip()
+    return content
+
+
+def _resolve_marker_merge(target: Path, rendered: str) -> Resolution:
+    body = _strip_marker_region(rendered)
+    if not target.exists():
+        # Byte-for-byte what write_file(use_markers=True) produces on create.
+        return Resolution(f"{MARKER_START}\n{body}\n{MARKER_END}\n")
+
+    existing = target.read_text(encoding="utf-8")
+    if MARKER_START not in existing or MARKER_END not in existing:
+        return Resolution(None, reason="No markers found")
+
+    start_idx = existing.find(MARKER_START)
+    end_idx = existing.find(MARKER_END) + len(MARKER_END)
+    return Resolution(f"{existing[:start_idx]}{MARKER_START}\n{body}\n{MARKER_END}{existing[end_idx:]}")
+
+
+def _resolve_json_merge(
+    root: Path,
+    target: Path,
+    rendered: str,
+    recommended_mcp: set[str] | None,
+) -> Resolution:
+    try:
+        template_data = json.loads(rendered)
+    except json.JSONDecodeError as exc:
+        return Resolution(None, error=f"Invalid JSON in template: {exc}")
+
+    if target.exists():
+        try:
+            existing_data = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return Resolution(None, error=f"Invalid JSON in existing file: {exc}")
+        merged = deep_merge_json(existing_data, template_data)
     else:
-        return UpdateResult(entry.output_path, entry.strategy, "SKIPPED", warning="No markers found")
+        merged = template_data
+
+    changes = tuple(_reconcile_mcp_servers(merged, root, recommended_mcp)) if recommended_mcp is not None else ()
+    return Resolution(json.dumps(merged, indent=4) + "\n", notes=changes)
+
+
+def _write_rendered(target: Path, text: str) -> None:
+    """Write already-resolved content through the single writer.
+
+    Every strategy decides *what* to write; this decides *how*. Routing all of
+    them through ``write_file`` means there is exactly one place that creates
+    parent directories, writes bytes and applies the executable bit - which is
+    the precondition for the reconciler writing through the same path instead
+    of growing a second implementation.
+    """
+    write_file(target, text, force=True)
 
 
 def _reconcile_mcp_servers(merged: dict[str, Any], root: Path, recommended: set[str]) -> list[str]:
@@ -775,57 +861,32 @@ def _handle_json_merge(
     dry_run: bool,
     recommended_mcp: set[str] | None = None,
 ) -> UpdateResult:
-    try:
-        try:
-            template_data = json.loads(content)
-        except json.JSONDecodeError as e:
-            return UpdateResult(
-                entry.output_path,
-                entry.strategy,
-                "ERROR",
-                warning=f"Invalid JSON in template: {e}",
-            )
-
-        if not target.exists():
-            merged = template_data
-            changes = (
-                _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
-            )
-            if not dry_run:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
-            return UpdateResult(
-                entry.output_path,
-                entry.strategy,
-                "CREATED",
-                warning="; ".join(changes) or None,
-            )
-
-        try:
-            existing_data = json.loads(target.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            return UpdateResult(
-                entry.output_path,
-                entry.strategy,
-                "ERROR",
-                warning=f"Invalid JSON in existing file: {e}",
-            )
-
-        merged = deep_merge_json(existing_data, template_data)
-        changes = _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
-
+    if not target.exists():
+        resolution = resolve_text(entry, root, target, content, recommended_mcp=recommended_mcp)
+        if resolution.error is not None:
+            return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=resolution.error)
         if not dry_run:
-            target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
-
+            _write_rendered(target, resolution.text or "")
         return UpdateResult(
             entry.output_path,
             entry.strategy,
-            "UPDATED",
-            warning="; ".join(changes) or None,
+            "CREATED",
+            warning="; ".join(resolution.notes) or None,
         )
 
-    except Exception as exc:
-        return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=str(exc))
+    resolution = resolve_text(entry, root, target, content, recommended_mcp=recommended_mcp)
+    if resolution.error is not None:
+        return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=resolution.error)
+
+    if not dry_run:
+        _write_rendered(target, resolution.text or "")
+
+    return UpdateResult(
+        entry.output_path,
+        entry.strategy,
+        "UPDATED",
+        warning="; ".join(resolution.notes) or None,
+    )
 
 
 def _handle_generated(

@@ -77,7 +77,7 @@ Typer-based CLI with seven sub-apps:
 
 - **`n3rv init`** — Scaffolds target project with agent-native files using Jinja2 templates from `src/n3rv/init/templates/`. Detects stack (python/node/go/generic) via `detector.py`. Generates `AGENTS.md`, `opencode.json` (4 MCP servers), `.opencode/` (18 skills, 7 agents, 8 commands, plugins), `.n3rv/a2a-config.yaml`, `.githooks/pre-push`.
 - **`n3rv update`** — Updates existing scaffolded files. Supports `--dry-run`, `--diff`, `--force-commands`, `--only` flags. Handles `marker-merge` (AGENTS.md), `json-merge` (opencode.json), `overwrite`, `skip-default`.
-- **`n3rv converge <change_id>`** — Reconciliation: re-runs verify in converge mode, emits remediation tasks for any `FAIL`/`PARTIAL` acceptance criteria into `sdd-<change_id>-tasks`, optionally updates the project board.
+- **`n3rv plan` / `n3rv apply`** — Reconciliation: compares `.n3rv/state.yaml` with the tree and converges it. See [RECONCILE.md](RECONCILE.md).
 - **`n3rv hub start`** — Launches the A2A hub server (foreground).
 - **`n3rv daemon *`** — Manage hub daemon via systemd user service: `install`, `start`, `stop`, `status`, `enable --now`, `logs`.
 - **`n3rv memory *`** — Direct memory inspection. Delegates to `cli_memory.py`: `list`, `search`, `prune`, `stats`.

@@ -39,8 +39,9 @@ your-project/
 | **Provider Abstraction** | `ModelProvider` Protocol + `get_provider("qwen"|"openai"|"local"|"fallback")` with `N3RV_PROVIDER` + `N3RV_FALLBACK_PROVIDERS`. Includes `get_tts_provider()` / `TTSFallbackProvider` |
 | **Input Validation** | `n3rv.limits` — `validate_text_input`, `validate_image_input`, `validate_audio_*`, `estimate_tokens` for satellite payloads |
 | **Config Generation** | Jinja2-templated scaffold of `AGENTS.md`, `opencode.json`, skills (18), agents (7), commands (8), plugins, hooks — stack-aware (python/node/go/generic) |
+| **Reconciler** | `.n3rv/state.yaml` declares the desired state; `plan` reads, `apply` converges, `doctor` verifies. Hermetic rendering: same state + templates + version = same output, whatever branch you are on. Conflicts, policy-inert config and detection divergence are reported, never guessed |
 | **Org Mode** | Multi-satellite workspace: `n3rv org init|add-satellite|sync|protect` — shared skills, hub registry, branch protection |
-| **SDD Workflow** | 8-phase `explore → propose → spec → design → tasks → apply → verify → archive` + `converge` + lighter Spec-Kit path (`spec/plan/tasks` under `.specify/`) |
+| **SDD Workflow** | 8-phase `explore → propose → spec → design → tasks → apply → verify → archive` with a converge mode in verify + lighter Spec-Kit path (`spec/plan/tasks` under `.specify/`) |
 | **Daemon** | `systemd --user` unit (`n3rv daemon install|enable|start|stop|status|logs`) — one hub per machine, all projects share it |
 
 ## Quick Start
@@ -78,7 +79,10 @@ Generated `opencode.json` wires all 4 MCP servers with `N3RV_AGENT_SOURCE=openco
 ```
 n3rv init [--root PATH] [--project-name NAME] [--stack python|node|go|generic] [--force]
 n3rv update [--dry-run] [--diff] [--force-commands] [--only marker-merge|json-merge|overwrite|skip-default] [--root PATH]
-n3rv converge <change_id> [--root PATH] [--issue N]          # close spec↔impl gap → sdd-*-tasks
+n3rv state init [--root PATH] [--force]                      # declare the desired state
+n3rv state show [--root PATH] [--json]
+n3rv plan [--root PATH] [--json] [--global-config PATH]      # reads only, exits with a bitmask
+n3rv apply [--root PATH] [--json] [--force-project-files]    # converges to the declared state
 n3rv hub start
 n3rv daemon install|start|stop|status|enable [--now]|logs [--root PATH]
 n3rv memory list    [--type TYPE] [--scope SCOPE] [--limit N]
@@ -170,7 +174,7 @@ project: my-project
 
 Each phase is an opencode skill (`sdd-*`) that saves to memory under `sdd-<change_id>-<phase>`. The hub tracks phase on the [The-Replacement Roadmap](https://github.com/orgs/The-Replacement/projects/2) when `--issue N` is passed.
 
-- `n3rv converge <change_id> [--issue N]` — re-runs verify in converge mode and emits remediation tasks for any `FAIL`/`PARTIAL` acceptance criteria.
+- Verify's *converge mode* is a skill behaviour, not a CLI command: when a verdict is `NEEDS_WORK`, the orchestrator emits remediation tasks for every `FAIL`/`PARTIAL` criterion into `sdd-<change_id>-tasks`.
 - **Spec-Kit path** (lighter, 3 artifacts) — `sdd-spec-kit-{spec,plan,tasks}` with templates under `.specify/templates/` (byte-identical to GitHub Spec Kit, see `NOTICE.md`).
 
 Full detail: [docs/SDD-WORKFLOW.md](docs/SDD-WORKFLOW.md).
@@ -210,6 +214,7 @@ CI (`.github/workflows/ci.yml`): `Lint & Format` + `Test 3.11/3.12/3.13` — 4 r
 | Doc | Content |
 |-----|---------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System overview, 4 MCP servers, Evangelion map, data flows, dispatch (native subagents vs hub) |
+| [docs/RECONCILE.md](docs/RECONCILE.md) | `.n3rv/state.yaml`, `plan`/`apply`/`doctor`, exit bits, conflicts, inertness, migration recipe |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Install, `init`/`daemon`/`org`/`code-graph`, env vars, multi-agent machine, troubleshooting |
 | [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md) | All 31 tools — memory (12) + hub (5) + exec (8) + code-graph (6) |
 | [docs/SDD-WORKFLOW.md](docs/SDD-WORKFLOW.md) | 8 phases, memory keys, converge, Spec-Kit, `change_id` convention |

@@ -38,8 +38,8 @@ def test_init_does_not_redeclare_n3rv_mcp(tmp_path: Path):
     assert result.exit_code == 0
 
     ocode = json.loads((tmp_path / "opencode.json").read_text())
-    assert "n3rv-memory" not in ocode.get("mcp", {})
-    assert "n3rv-hub" not in ocode.get("mcp", {})
+    assert "n3rv-memory" not in ocode["mcp"]["servers"]
+    assert "n3rv-hub" not in ocode["mcp"]["servers"]
 
 
 def test_init_creates_systemd_unit(tmp_path: Path):

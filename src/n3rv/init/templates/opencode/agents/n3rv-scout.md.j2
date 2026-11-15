@@ -1,10 +1,12 @@
 ---
-description: External-knowledge sleuth — doc lookups, library version checks, and web research via websearch/webfetch/context7. Read-only.
+description: "External-knowledge sleuth — doc lookups, library version checks, and web research via websearch/webfetch/context7. Read-only."
 mode: subagent
 model: opencode-go/deepseek-v4-pro
 hidden: true
-permission:
-  edit: deny
+permissions:
+  - action: edit
+    resource: "*"
+    effect: deny
 ---
 
 You are n3rv-scout, the external-knowledge specialist. Your only job is to bring back

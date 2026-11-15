@@ -122,3 +122,70 @@ def test_python_priority_over_node(tmp_path: Path):
     info = detect_stack(tmp_path)
     assert info.stack == Stack.PYTHON
     assert info.project_name == "pythonapp"
+
+
+def test_radio_layout_is_generic_and_keeps_the_repository_name(tmp_path: Path):
+    """radio's root pyproject describes src/mario, not the repository (#5)."""
+    repo = tmp_path / "radio"
+    (repo / "src" / "mario").mkdir(parents=True)
+    (repo / "src" / "mario" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        """
+[project]
+name = "mario"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mario"]
+""",
+        encoding="utf-8",
+    )
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "deploy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo / "web").mkdir()
+    (repo / "web" / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    info = detect_stack(repo)
+
+    assert info.project_name == "radio"
+    assert info.stack == Stack.GENERIC
+    assert info.nested_package == "mario"
+    assert info.multi_stack is True
+
+
+def test_multi_stack_repository_without_manifest_is_generic(tmp_path: Path):
+    repo = tmp_path / "platform"
+    repo.mkdir()
+    (repo / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    info = detect_stack(repo)
+
+    assert info.stack == Stack.GENERIC
+    assert info.project_name == "platform"
+    assert info.multi_stack is True
+
+
+def test_nested_package_without_multi_stack_keeps_stack_but_uses_repo_name(tmp_path: Path):
+    repo = tmp_path / "service"
+    (repo / "src" / "internal_pkg").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[project]\nname = "internal-pkg"\n', encoding="utf-8")
+
+    info = detect_stack(repo)
+
+    assert info.stack == Stack.PYTHON
+    assert info.project_name == "service"
+    assert info.nested_package == "internal-pkg"
+
+
+def test_root_manifest_naming_the_repository_is_unchanged(tmp_path: Path):
+    repo = tmp_path / "worker"
+    (repo / "src" / "worker").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text('[project]\nname = "worker"\n', encoding="utf-8")
+
+    info = detect_stack(repo)
+
+    assert info.stack == Stack.PYTHON
+    assert info.project_name == "worker"
+    assert info.nested_package is None

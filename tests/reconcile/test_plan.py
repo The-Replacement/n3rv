@@ -173,3 +173,69 @@ class TestExitBits:
 
     def test_usage_bit_is_independent(self) -> None:
         assert PLAN_CODES["usage"] & PLAN_CODES["drift"] == 0
+
+
+class TestEnvNeutralization:
+    HUB = ".n3rv/systemd/n3rv-hub.service"
+
+    def test_env_only_diff_becomes_environment_finding_not_update(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        state = state_from_tree(root)
+
+        plan = build_plan(
+            root,
+            state,
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary="/different/install/bin/n3rv",
+        )
+
+        hub_actions = [a for a in plan.actions if a.target == self.HUB]
+        assert hub_actions == [], [f"{a.kind} {a.reason}" for a in hub_actions]
+        env_findings = [f for f in plan.findings if f.code == "environment" and self.HUB in f.message]
+        assert env_findings, [f.message for f in plan.findings]
+
+    def test_converged_tree_plans_empty_from_any_install(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        state = state_from_tree(root)
+
+        for binary in ("/a/n3rv", "/b/n3rv", "/totally/different/path/n3rv"):
+            plan = build_plan(
+                root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=binary
+            )
+            assert plan.empty, [f"{a.kind} {a.target} {a.reason}" for a in plan.actions]
+            assert plan.exit_code == 0
+
+    def test_missing_env_derived_file_is_still_created(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        hub = root / self.HUB
+        hub.unlink()
+        state = state_from_tree(root)
+
+        plan = build_plan(
+            root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="/other/n3rv"
+        )
+
+        hub_actions = [a for a in plan.actions if a.target == self.HUB]
+        assert len(hub_actions) == 1
+        assert hub_actions[0].kind == ActionKind.CREATE
+
+    def test_real_non_env_change_still_produces_update(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        hub = root / self.HUB
+        # change a non-env part of the on-disk file (keep env values as-is)
+        hub.write_text(hub.read_text().replace("RestartSec=5", "RestartSec=99"))
+        state = state_from_tree(root)
+
+        plan = build_plan(
+            root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=resolve_n3rv_binary() or "n3rv"
+        )
+
+        hub_actions = [a for a in plan.actions if a.target == self.HUB]
+        assert hub_actions and hub_actions[0].kind in {ActionKind.UPDATE, ActionKind.REGENERATE}
+        env_findings = [f for f in plan.findings if f.code == "environment" and self.HUB in f.message]
+        assert not env_findings

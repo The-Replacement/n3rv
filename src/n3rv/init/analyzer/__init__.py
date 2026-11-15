@@ -11,6 +11,7 @@ from n3rv.init.analyzer.profile import ProjectProfile
 from n3rv.init.analyzer.structure import StructureDetector
 from n3rv.init.analyzer.tools import ToolDetector
 from n3rv.init.context import ProjectContext
+from n3rv.init.detector import _extract_requires_python
 
 logger = logging.getLogger("n3rv.init.analyzer")
 
@@ -48,6 +49,8 @@ def analyze_project(root: Path, context: ProjectContext) -> ProjectProfile:
         logger.debug("MCP recommender failed: %s", exc)
         mcp_servers = []
 
+    requires_python = _extract_requires_python(root / "pyproject.toml")
+
     return ProjectProfile(
         stack=stack,
         project_name=context.project_name,
@@ -55,4 +58,5 @@ def analyze_project(root: Path, context: ProjectContext) -> ProjectProfile:
         tools=tools,
         structure=structure,
         mcp_servers=mcp_servers,
+        requires_python=requires_python,
     )

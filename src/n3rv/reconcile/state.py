@@ -314,6 +314,7 @@ def state_from_tree(root: Path) -> ProjectState:
             ),
             frameworks=[FrameworkState(**asdict(fw)) for fw in profile.frameworks],
             tools=[ToolState(**asdict(tool)) for tool in profile.tools],
+            requires_python=profile.requires_python,
         ),
         mcp=McpState(servers=served if served is not None else _servers_from_profile(profile)),
     )
@@ -422,6 +423,7 @@ def render_context(state: ProjectState, *, project_root: Path, n3rv_binary: str,
         "profile_has_tools": bool(state.detection.tools),
         "profile_mcp_servers": [server.model_dump() for server in state.mcp.servers],
         "profile_has_mcp_servers": bool(state.mcp.servers),
+        "requires_python": state.detection.requires_python,
         **board_context(),
     }
 

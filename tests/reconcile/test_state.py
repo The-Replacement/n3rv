@@ -338,3 +338,26 @@ class TestMigration:
             }
         )
         assert loaded.detection == v1.detection
+
+
+class TestRequiresPython:
+    def _ctx(self, tmp_path: Path, state: ProjectState, binary: str = "/usr/bin/n3rv") -> dict:
+        from n3rv.reconcile import render_context
+
+        return render_context(state, project_root=tmp_path, n3rv_binary=binary, n3rv_version="1.0.0")
+
+    def test_render_context_exposes_requires_python(self, tmp_path: Path) -> None:
+        state = _state(detection={"requires_python": ">=3.15"})
+        ctx = self._ctx(tmp_path, state)
+        assert ctx["requires_python"] == ">=3.15"
+
+    def test_render_context_requires_python_none_when_absent(self, tmp_path: Path) -> None:
+        ctx = self._ctx(tmp_path, _state())
+        assert ctx["requires_python"] is None
+
+    def test_state_from_tree_pins_requires_python(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nrequires-python = ">=3.15"\n'
+        )
+        state = state_from_tree(tmp_path)
+        assert state.detection.requires_python == ">=3.15"

@@ -96,7 +96,7 @@ class TestDrift:
         assert any(f.code == "unknown_component" for f in plan.findings)
         assert plan.exit_code & PLAN_CODES["usage"]
 
-    def test_project_owned_modification_is_a_warning_not_a_conflict(self, tmp_path: Path, capsys) -> None:
+    def test_project_owned_modification_is_a_conflict_the_plan_refuses_to_guess(self, tmp_path: Path, capsys) -> None:
         root = _converged(tmp_path)
         capsys.readouterr()
         agents = root / "AGENTS.md"
@@ -109,10 +109,31 @@ class TestDrift:
 
         plan = _plan(root)
 
-        owned = [f for f in plan.findings if f.code == "project_owned"]
-        assert owned, "an edit inside the managed region must be reported"
-        assert not [a for a in plan.actions if a.kind == ActionKind.CONFLICT]
-        assert not [a for a in plan.actions if a.target == "AGENTS.md"]
+        conflicts = [a for a in plan.actions if a.kind == ActionKind.CONFLICT and a.target == "AGENTS.md"]
+        assert conflicts, "an edit inside the managed region must surface as a conflict"
+        assert plan.exit_code & PLAN_CODES["conflict"]
+
+    def test_force_project_files_turns_the_conflict_into_an_update(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        agents = root / "AGENTS.md"
+        text = agents.read_text(encoding="utf-8")
+        marker_line_end = text.find("\n", text.find(MARKER_START))
+        agents.write_text(
+            text[: marker_line_end + 1] + "hand edit\n" + text[marker_line_end + 1 :], encoding="utf-8"
+        )
+
+        plan = build_plan(
+            root,
+            state_from_tree(root),
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary=resolve_n3rv_binary() or "n3rv",
+            force_project_files=True,
+        )
+
+        kinds = {a.target: a.kind for a in plan.actions}
+        assert kinds.get("AGENTS.md") in {ActionKind.UPDATE, ActionKind.REGENERATE}
 
 
 class TestDeterminism:

@@ -21,6 +21,7 @@ from n3rv.init.renderer import TemplateEngine
 from n3rv.init.update import (
     FILE_UPDATE_MANIFEST,
     UpdateEntry,
+    _locked_managed_hash,
     _project_owned_modified,
     entry_render_context,
     resolve_text,
@@ -296,14 +297,24 @@ def resolve_actions(
             continue
 
         if entry.project_owned and not force_project_files and _project_owned_modified(entry, root, target):
-            # update() leaves a modified project-owned file alone. Reporting it
-            # as a conflict would make every converged tree non-empty and would
-            # claim the generator has an opinion it deliberately does not have.
-            findings.append(
-                Finding(
-                    "project_owned",
-                    "warn",
-                    f"{entry.output_path}: modified since last generation (use --force-project-files)",
+            # update() silently skips these. A reconciler must not: it cannot
+            # converge the file without overwriting a human edit, and a warning
+            # that never becomes an action hides a file it will never converge.
+            provenance = _locked_managed_hash(root, entry.output_path)
+            reason = (
+                "lockfile records no provenance for this project-owned file"
+                if provenance is None
+                else "managed region changed since generation"
+            )
+            actions.append(
+                Action(
+                    ActionKind.CONFLICT,
+                    entry.output_path,
+                    entry.strategy.value,
+                    reason,
+                    entry.template_name,
+                    hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                    desired_sha,
                 )
             )
             continue

@@ -59,7 +59,7 @@ reviewed in a single focused session.
 **After saving to memory**, update the project board. Check your prompt for an issue number (look for `for issue #N` or `#<number>`). If found, run:
 
 ```bash
-n3rv board sync --issue <ISSUE_NUMBER> --phase {phase}
+n3rv board sync --issue <ISSUE_NUMBER> --phase tasks
 ```
 
 `n3rv board sync` resolves the item with complete pagination, asserts exactly one match, updates Status and SDD Phase together, and prints a JSON result. An issue that is not on the board exits non-zero — report it instead of skipping silently. **If no issue number is present in your prompt, skip this entire section.**

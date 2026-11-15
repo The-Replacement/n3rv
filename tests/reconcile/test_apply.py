@@ -135,3 +135,31 @@ class TestLockfileHonesty:
 
         entries = json.loads((tmp_path / ".n3rv/template-lock.json").read_text())["entries"]
         assert {e["context_hash"] for e in entries.values()} == {state.sha256()}
+
+
+class TestInvalidState:
+    def test_an_unknown_component_writes_nothing_at_all(self, tmp_path: Path, capsys) -> None:
+        """A typo in components must not become 'delete everything else'."""
+        from n3rv.init.context import Stack
+        from n3rv.reconcile.state import ProjectIdentity, ProjectState
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
+        run_update(tmp_path)
+        capsys.readouterr()
+        save_state(tmp_path, state_from_tree(tmp_path))
+        populated = _snapshot(tmp_path)
+
+        save_state(
+            tmp_path,
+            ProjectState(
+                project=ProjectIdentity(name="demo", stack=Stack.GENERIC),
+                components=Components(skills=["does-not-exist"]),
+            ),
+            force=True,
+        )
+        result = _apply(tmp_path)
+
+        assert not result.ok
+        assert "invalid" in (result.error or "")
+        assert result.applied == []
+        assert _snapshot(tmp_path) == populated

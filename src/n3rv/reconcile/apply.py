@@ -77,6 +77,15 @@ def apply_resolved_plan(
 ) -> ApplyResult:
     """Execute an already-resolved plan. Separated so tests can drive it directly."""
     result = ApplyResult(plan_hash=plan.plan_hash)
+
+    # An invalid state cannot be applied, not even partially. Without this,
+    # a typo in components turns into "delete everything that was declared
+    # before" - which is exactly what an unknown component produces.
+    blocking = [f for f in plan.findings if f.code in {"unknown_component", "template_missing"}]
+    if blocking:
+        result.error = "the declared state is invalid: " + "; ".join(f.message for f in blocking)
+        return result
+
     entries: dict[str, Any] = dict(load_lockfile(root).get("entries") or {})
 
     for action in plan.actions:

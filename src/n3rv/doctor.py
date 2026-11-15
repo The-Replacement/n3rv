@@ -483,12 +483,13 @@ def _template_revision_findings(root: Path, templates_dir: Path | None = None) -
 
     templates = templates_dir or _TEMPLATES_DIR
     findings: list[Finding] = []
-    untracked = 0
+    untraced = 0
+    traced = 0
     for output_path, entry in sorted(entries.items()):
         template_name = (entry or {}).get("template") or ""
         recorded = (entry or {}).get("template_sha256")
         if not template_name:
-            untracked += 1
+            untraced += 1
             continue
         template_path = templates / template_name
         if not template_path.is_file():
@@ -504,12 +505,21 @@ def _template_revision_findings(root: Path, templates_dir: Path | None = None) -
                 )
             )
         elif not recorded:
-            untracked += 1
+            # No recorded revision: the entry predates provenance recording or
+            # was written by a path that skipped it. That is not a mismatch —
+            # claiming it matched would be the lie the old ✓ line told — but
+            # it is not traceable either (n3rv#17).
+            untraced += 1
+        else:
+            traced += 1
 
     if not findings:
-        findings.append(_ok(f"all {len(entries)} tracked files match their template revision"))
-    if untracked:
-        findings.append(_warn(f"{untracked} tracked file(s) have no recorded template revision"))
+        if traced:
+            findings.append(_ok(f"all {traced} traced file(s) match their template revision"))
+        elif entries:
+            findings.append(_warn("no tracked file records a template revision; run n3rv apply to trace them"))
+    if untraced:
+        findings.append(_warn(f"{untraced} tracked file(s) are untraced: no recorded template revision"))
     return findings
 
 

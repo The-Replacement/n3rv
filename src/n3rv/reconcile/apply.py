@@ -66,7 +66,7 @@ def apply_plan(
         force_project_files=force_project_files,
         global_config=global_config,
     )
-    return apply_resolved_plan(root, state, plan, resolutions)
+    return apply_resolved_plan(root, state, plan, resolutions, templates_dir=templates_dir)
 
 
 def apply_resolved_plan(
@@ -74,8 +74,13 @@ def apply_resolved_plan(
     state: Any,
     plan: Plan,
     resolutions: dict[str, Any],
+    templates_dir: Path | None = None,
 ) -> ApplyResult:
-    """Execute an already-resolved plan. Separated so tests can drive it directly."""
+    """Execute an already-resolved plan. Separated so tests can drive it directly.
+
+    ``templates_dir`` records which template revision each write came from in
+    the lockfile entry; without it the entry is untraceable (n3rv#17).
+    """
     result = ApplyResult(plan_hash=plan.plan_hash)
 
     # An invalid state cannot be applied, not even partially. Without this,
@@ -119,10 +124,14 @@ def apply_resolved_plan(
             result.lockfile_entries = len(entries)
             return result
 
+        template_path: Path | None = None
+        if templates_dir is not None and action.source:
+            template_path = templates_dir / action.source
         entries[action.target] = record_entry(
             target,
             action.source or "",
             context_hash=state.sha256(),
+            template_path=template_path,
         )
         result.applied.append(AppliedAction(action.kind.value, action.target, "written"))
 

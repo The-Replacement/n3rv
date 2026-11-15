@@ -36,6 +36,11 @@ class StackInfo:
 
 
 def detect_stack(root: Path, stack_override: str | None = None) -> StackInfo:
+    # Identity is derived from ``root.name`` below, and ``Path(".").name`` is
+    # the empty string: an unresolved relative root ("--root .", or "..") would
+    # yield an empty project name that only fails much later, inside pydantic
+    # validation, as a traceback. Resolve once, here, where identity is born.
+    root = root.resolve()
     manifest_stack = _detect_stack_from_manifests(root)
     declared_name = _extract_project_name(root)
     nested_package = _nested_package(root, declared_name)

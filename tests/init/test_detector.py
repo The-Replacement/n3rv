@@ -189,3 +189,18 @@ def test_root_manifest_naming_the_repository_is_unchanged(tmp_path: Path):
     assert info.stack == Stack.PYTHON
     assert info.project_name == "worker"
     assert info.nested_package is None
+
+
+def test_relative_dot_root_derives_the_directory_name(tmp_path: Path, monkeypatch):
+    """`--root .` must not produce an empty project name.
+
+    ``Path(".").name`` is "", which used to reach pydantic as an invalid
+    project_name and surface as a traceback instead of a config.
+    """
+    repo = tmp_path / "infra"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    info = detect_stack(Path("."))
+
+    assert info.project_name == "infra"

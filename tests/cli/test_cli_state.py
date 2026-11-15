@@ -80,3 +80,15 @@ def test_state_show_without_a_state_fails_cleanly(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "state init" in result.stdout + result.stderr
+
+
+def test_state_init_accepts_a_relative_dot_root(tmp_path: Path, monkeypatch) -> None:
+    """The way a human actually types it: stand in the repo, use ``--root .``."""
+    repo = tmp_path / "infra"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["state", "init", "--root", "."])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert load_state(repo).project.name == "infra"

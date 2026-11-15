@@ -49,6 +49,7 @@ def apply_plan(
     n3rv_version: str,
     n3rv_binary: str,
     force_project_files: bool = False,
+    global_config: Path | None = None,
 ) -> ApplyResult:
     """Recompute the plan and apply it.
 
@@ -63,6 +64,7 @@ def apply_plan(
         n3rv_version=n3rv_version,
         n3rv_binary=n3rv_binary,
         force_project_files=force_project_files,
+        global_config=global_config,
     )
     return apply_resolved_plan(root, state, plan, resolutions)
 

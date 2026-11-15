@@ -54,6 +54,9 @@ def plan_cmd(
     force_project_files: bool = typer.Option(
         False, "--force-project-files", help="Include project-owned files whose managed region changed"
     ),
+    global_config: Path | None = typer.Option(
+        None, "--global-config", help="Global opencode config used for the policy check"
+    ),
 ) -> None:
     """Show what apply would do. Reads only; never writes."""
     state = _load(root)
@@ -64,6 +67,7 @@ def plan_cmd(
         n3rv_version=_version(),
         n3rv_binary=resolve_n3rv_binary() or "n3rv",
         force_project_files=force_project_files,
+        global_config=global_config,
     )
     if json_output:
         typer.echo(json.dumps(plan.to_dict(), indent=2))
@@ -79,6 +83,9 @@ def apply_cmd(
     force_project_files: bool = typer.Option(
         False, "--force-project-files", help="Overwrite project-owned files whose managed region changed"
     ),
+    global_config: Path | None = typer.Option(
+        None, "--global-config", help="Global opencode config used for the policy check"
+    ),
 ) -> None:
     """Converge the tree to the declared state.
 
@@ -92,6 +99,7 @@ def apply_cmd(
         n3rv_version=_version(),
         n3rv_binary=resolve_n3rv_binary() or "n3rv",
         force_project_files=force_project_files,
+        global_config=global_config,
     )
 
     if json_output:

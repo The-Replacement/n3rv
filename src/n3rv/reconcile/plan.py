@@ -220,6 +220,7 @@ def build_plan(
     n3rv_version: str,
     n3rv_binary: str,
     force_project_files: bool = False,
+    global_config: Path | None = None,
 ) -> Plan:
     """Compute the action list. Pure with respect to the filesystem."""
     return resolve_actions(
@@ -229,6 +230,7 @@ def build_plan(
         n3rv_version=n3rv_version,
         n3rv_binary=n3rv_binary,
         force_project_files=force_project_files,
+        global_config=global_config,
     )[0]
 
 
@@ -240,6 +242,7 @@ def resolve_actions(
     n3rv_version: str,
     n3rv_binary: str,
     force_project_files: bool = False,
+    global_config: Path | None = None,
 ) -> tuple[Plan, dict[str, Any]]:
     """Build the plan and keep the resolved text for every target.
 
@@ -334,6 +337,28 @@ def resolve_actions(
 
     actions.extend(_deletions(root, entries, lock_entries))
 
+    # Advisory: detection may report, never act.
+    from n3rv.reconcile.divergence import detect_divergence
+
+    for raw in detect_divergence(root, state):
+        findings.append(Finding(raw["code"], raw["level"], raw["message"]))
+
+    # Inert: configuration the policy would drop at startup.
+    from n3rv.reconcile.policy import allowlisted, inert_targets
+
+    allow, reason = allowlisted(global_config)
+    if allow is None:
+        findings.append(Finding("policy_unknown", "warn", reason or "policy unavailable"))
+    else:
+        blocked = inert_targets(
+            allow,
+            servers=[server.name for server in state.mcp.servers],
+            skills=list(state.components.skills),
+        )
+        actions = _mark_inert(actions, blocked)
+        for why in sorted(blocked.values()):
+            findings.append(Finding("inert", "warn", why))
+
     return (
         Plan(
             state_sha=state.sha256(),
@@ -345,6 +370,38 @@ def resolve_actions(
         ),
         resolutions,
     )
+
+
+def _mark_inert(actions: list[Action], blocked: dict[str, str]) -> list[Action]:
+    """Turn an action into INERT when its content is configuration policy drops.
+
+    opencode.json carries the MCP server set, so one unlisted server makes the
+    whole file inert: writing it would produce a config that looks applied and
+    silently loses that server at startup.
+    """
+    marked: list[Action] = []
+    for action in actions:
+        reason = None
+        if action.target == "opencode.json":
+            reason = next((why for key, why in sorted(blocked.items()) if key.startswith("mcp:")), None)
+        elif action.target.startswith(".opencode/skills/"):
+            skill = action.target.split("/")[2]
+            reason = blocked.get(f"skill:{skill}")
+        if reason is None or action.kind in {ActionKind.CONFLICT, ActionKind.INERT}:
+            marked.append(action)
+        else:
+            marked.append(
+                Action(
+                    ActionKind.INERT,
+                    action.target,
+                    action.strategy,
+                    reason,
+                    action.source,
+                    action.current_sha,
+                    action.desired_sha,
+                )
+            )
+    return marked
 
 
 def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any]) -> list[Action]:

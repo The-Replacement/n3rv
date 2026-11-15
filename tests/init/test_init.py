@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+from n3rv.board import PHASE_TRANSITIONS
 from n3rv.init import run_init
 from n3rv.init.update import run_update
 
@@ -124,6 +126,24 @@ class TestInit:
 
         content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
         assert "Language: English everywhere" in content
+
+    def test_generated_sdd_skills_name_a_real_board_phase(self, tmp_path: Path) -> None:
+        """Every SDD skill must hand the agent a runnable board command.
+
+        The templates shipped ``--phase {phase}``: single braces, so Jinja never
+        interpolated it and every repo's skill told the agent to run a command
+        that cannot succeed.
+        """
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        skills = sorted((tmp_path / ".opencode/skills").glob("sdd-*/SKILL.md"))
+        assert skills, "no SDD skills were generated"
+        for skill in skills:
+            text = skill.read_text(encoding="utf-8")
+            assert "{phase}" not in text, f"{skill.parent.name} still has a literal placeholder"
+            for phase in re.findall(r"--phase\s+([a-z-]+)", text):
+                assert phase in PHASE_TRANSITIONS, f"{skill.parent.name}: unknown phase {phase!r}"
 
     def test_generated_agents_md_does_not_pin_a_python_version(self, tmp_path: Path) -> None:
         """The template cannot know the floor, so it must not assert one.

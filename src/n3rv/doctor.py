@@ -99,6 +99,25 @@ class CategoryResult:
     def failed(self) -> bool:
         return any(finding.level == "fail" for finding in self.findings)
 
+    def strict(self) -> CategoryResult:
+        """Treat every unverified check as a failure.
+
+        A skip means "this could not be checked", which is honest but not
+        clean. A category that skipped the mainframe leg has proven nothing
+        about the mainframe, so strict mode refuses to call it a pass.
+        """
+        if not any(finding.level == "skip" for finding in self.findings):
+            return self
+        return CategoryResult(
+            self.name,
+            [
+                Finding("fail", f"unverified: {finding.message}", finding.context)
+                if finding.level == "skip"
+                else finding
+                for finding in self.findings
+            ],
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": not self.failed,
@@ -202,7 +221,12 @@ def check_drift(
 
     mainframe = _git(runner, root, "remote", "get-url", mainframe_remote)
     if mainframe.returncode != 0:
-        findings.append(_skip(f"no {mainframe_remote} remote configured"))
+        findings.append(
+            _skip(
+                f"no {mainframe_remote} remote configured",
+                hint="add the remote, pass --mainframe-remote, or use --strict to fail on unverified checks",
+            )
+        )
     else:
         ls_remote = _git(runner, root, "ls-remote", "--exit-code", mainframe_remote, "HEAD")
         if ls_remote.returncode != 0 or not ls_remote.stdout.strip():
@@ -573,7 +597,13 @@ def run_doctor(
     templates_dir: Path | None = None,
     runner: Runner | None = None,
     json_output: bool = False,
+    strict: bool = False,
 ) -> int:
+    """Run every category and OR their exit bits.
+
+    ``strict`` upgrades skipped checks to failures, so a run that could not
+    reach a remote or the GitHub API cannot pass by omission.
+    """
     run = runner or default_runner
     categories = [
         check_drift(root, run, repo=repo, mainframe_remote=mainframe_remote),
@@ -582,6 +612,8 @@ def run_doctor(
         check_convergence(root, templates_dir=templates_dir),
         check_hooks(root),
     ]
+    if strict:
+        categories = [category.strict() for category in categories]
 
     exit_code = 0
     for category in categories:

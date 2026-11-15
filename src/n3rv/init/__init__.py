@@ -463,6 +463,62 @@ def _check_n3rv_migration(root: Path) -> bool:
         print("Please enter 1 or 2.")
 
 
+#: Component family for each generated output, derived from its path prefix.
+#: The reconciler (n3rv#9) selects manifest entries by family; a new entry must
+#: fall into one of these - or be named in the always-on sets below - or
+#: family_for() raises and the coverage test fails. There is deliberately no
+#: catch-all: an unmapped output is a decision nobody made.
+FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
+    (".opencode/agents/", "agents"),
+    (".opencode/skills/", "skills"),
+    (".opencode/commands/", "commands"),
+    (".githooks/", "hooks"),
+    (".specify/", "spec-kit"),
+    (".n3rv/", "runtime"),
+)
+
+#: Prefixes whose outputs are always installed, never selected by component.
+_ALWAYS_ON_PREFIXES: tuple[str, ...] = (
+    ".opencode/plugins/",
+    ".opencode/shared/",
+    ".opencode/tools/",
+)
+
+#: Individual always-on outputs that match no prefix above.
+_ALWAYS_ON_FILES: frozenset[str] = frozenset(
+    {
+        "opencode.json",
+        "opencode.template.json",
+        ".opencode/package.json",
+    }
+)
+
+#: Families a project may declare in .n3rv/state.yaml. The rest are always on.
+DECLARABLE_FAMILIES: frozenset[str] = frozenset({"agents", "skills", "commands", "hooks"})
+
+ALWAYS_ON_FAMILY = "root"
+
+
+class UnknownFamilyError(ValueError):
+    """Raised when a generated output belongs to no known component family."""
+
+
+def family_for(output_path: str) -> str:
+    """Return the component family for a manifest output path.
+
+    Raises:
+        UnknownFamilyError: the output matches no prefix and no always-on rule,
+            which means a manifest entry was added without deciding where it
+            belongs.
+    """
+    for prefix, family in FAMILY_PREFIXES:
+        if output_path.startswith(prefix):
+            return family
+    if output_path in _ALWAYS_ON_FILES or output_path.startswith(_ALWAYS_ON_PREFIXES):
+        return ALWAYS_ON_FAMILY
+    raise UnknownFamilyError(f"no component family for generated output {output_path!r}")
+
+
 def run_init(
     root: Path,
     project_name: str | None,

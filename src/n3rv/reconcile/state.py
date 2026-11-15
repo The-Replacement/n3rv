@@ -191,12 +191,18 @@ def save_state(root: Path, state: ProjectState, *, force: bool = False) -> Path:
 def manifest_components() -> dict[str, dict[str, str]]:
     """Manifest-declared components, grouped by family: name -> output path.
 
+    Covers both manifests: ``init`` ships spec-kit templates that ``update``
+    does not manage, and ``update`` manages AGENTS.md which ``init`` does not.
+    A name is valid if either list knows it.
+
     Names are the identifiers a user reads: ``code`` for a skill, ``git-ops``
     for an agent or command, ``pre-push`` for a hook.
     """
+    from n3rv.init.update import FILE_UPDATE_MANIFEST
+
     grouped: dict[str, dict[str, str]] = {family: {} for family in DECLARABLE_FAMILIES}
-    for entry in FILE_MANIFEST:
-        output_path = entry[1]
+    outputs = [entry[1] for entry in FILE_MANIFEST] + [entry.output_path for entry in FILE_UPDATE_MANIFEST]
+    for output_path in outputs:
         family = family_for(output_path)
         if family == ALWAYS_ON_FAMILY:
             continue

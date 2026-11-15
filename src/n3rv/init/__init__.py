@@ -487,6 +487,7 @@ _ALWAYS_ON_PREFIXES: tuple[str, ...] = (
 #: Individual always-on outputs that match no prefix above.
 _ALWAYS_ON_FILES: frozenset[str] = frozenset(
     {
+        "AGENTS.md",
         "opencode.json",
         "opencode.template.json",
         ".opencode/package.json",

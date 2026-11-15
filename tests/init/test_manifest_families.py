@@ -19,10 +19,19 @@ from n3rv.init import (
     UnknownFamilyError,
     family_for,
 )
+from n3rv.init.update import FILE_UPDATE_MANIFEST
 
 
 def _outputs() -> list[str]:
-    return [entry[1] for entry in n3rv_init.FILE_MANIFEST]
+    """Every generated output, from BOTH manifests.
+
+    ``init`` and ``update`` keep separate lists: update does not manage the
+    spec-kit templates, and init does not manage AGENTS.md. Checking only one
+    of them is how AGENTS.md went unmapped.
+    """
+    init_outputs = [entry[1] for entry in n3rv_init.FILE_MANIFEST]
+    update_outputs = [entry.output_path for entry in FILE_UPDATE_MANIFEST]
+    return sorted(set(init_outputs) | set(update_outputs))
 
 
 class TestFamilyCoverage:
@@ -40,8 +49,15 @@ class TestFamilyCoverage:
             "spec-kit": 6,
             "runtime": 2,
             "hooks": 1,
-            ALWAYS_ON_FAMILY: 7,
+            ALWAYS_ON_FAMILY: 8,
         }
+
+    def test_both_manifests_are_covered(self) -> None:
+        """init and update keep separate lists; neither may drift out of the map."""
+        for output in [entry[1] for entry in n3rv_init.FILE_MANIFEST]:
+            assert family_for(output)
+        for entry in FILE_UPDATE_MANIFEST:
+            assert family_for(entry.output_path)
 
     def test_every_output_maps_to_exactly_one_family(self) -> None:
         for output in _outputs():

@@ -456,6 +456,18 @@ def run_update(
     force_project_files: bool = False,
 ) -> int:
     try:
+        # Two writers on one tree is how drift starts. Once a state file exists,
+        # the reconciler owns generation and update refuses rather than
+        # silently producing a tree nobody declared.
+        declared_state = root / ".n3rv" / "state.yaml"
+        if declared_state.exists():
+            print(
+                f"✗ {declared_state} declares this project's desired state.\n"
+                "  Use 'n3rv plan' to see the difference and 'n3rv apply' to converge.",
+                flush=True,
+            )
+            return 1
+
         if not _check_nerv_migration_update(root):
             return 0
         if not _check_n3rv_migration_update(root):

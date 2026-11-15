@@ -221,6 +221,31 @@ def build_plan(
     force_project_files: bool = False,
 ) -> Plan:
     """Compute the action list. Pure with respect to the filesystem."""
+    return resolve_actions(
+        root,
+        state,
+        templates_dir=templates_dir,
+        n3rv_version=n3rv_version,
+        n3rv_binary=n3rv_binary,
+        force_project_files=force_project_files,
+    )[0]
+
+
+def resolve_actions(
+    root: Path,
+    state: Any,
+    *,
+    templates_dir: Path,
+    n3rv_version: str,
+    n3rv_binary: str,
+    force_project_files: bool = False,
+) -> tuple[Plan, dict[str, Any]]:
+    """Build the plan and keep the resolved text for every target.
+
+    ``apply`` needs the exact bytes it is about to write; keeping them here
+    means the plan and the write share one resolution instead of rendering
+    twice and hoping the two passes agree.
+    """
     from n3rv.reconcile.state import render_context
 
     ctx = render_context(state, project_root=root, n3rv_binary=n3rv_binary, n3rv_version=n3rv_version)
@@ -230,6 +255,7 @@ def build_plan(
 
     entries, findings = selected_entries(state)
     actions: list[Action] = []
+    resolutions: dict[str, Any] = {}
 
     for entry in entries:
         target = root / entry.output_path
@@ -250,6 +276,7 @@ def build_plan(
 
         desired = resolution.text
         desired_sha = hashlib.sha256(desired.encode("utf-8")).hexdigest()
+        resolutions[entry.output_path] = resolution
         if not target.exists():
             actions.append(
                 Action(
@@ -296,13 +323,16 @@ def build_plan(
 
     actions.extend(_deletions(root, entries, lock_entries))
 
-    return Plan(
-        state_sha=state.sha256(),
-        n3rv_version=n3rv_version,
-        templates_sha=templates_sha(templates_dir),
-        env_hash=env_hash(root, n3rv_binary),
-        actions=tuple(actions),
-        findings=tuple(findings),
+    return (
+        Plan(
+            state_sha=state.sha256(),
+            n3rv_version=n3rv_version,
+            templates_sha=templates_sha(templates_dir),
+            env_hash=env_hash(root, n3rv_binary),
+            actions=tuple(actions),
+            findings=tuple(findings),
+        ),
+        resolutions,
     )
 
 

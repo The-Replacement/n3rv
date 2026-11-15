@@ -9,6 +9,7 @@ from n3rv.cli_board import board_app
 from n3rv.cli_code_graph import code_graph_app
 from n3rv.cli_memory import memory_app, memory_list, memory_search
 from n3rv.cli_org import org_app
+from n3rv.cli_reconcile import apply_cmd, plan_cmd
 from n3rv.cli_state import state_app
 from n3rv.daemon import (
     daemon_enable,
@@ -32,6 +33,8 @@ app.add_typer(org_app, name="org")
 app.add_typer(code_graph_app, name="code-graph")
 app.add_typer(board_app, name="board")
 app.add_typer(state_app, name="state")
+app.command("plan")(plan_cmd)
+app.command("apply")(apply_cmd)
 
 
 @hub_app.command("start")

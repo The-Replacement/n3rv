@@ -99,6 +99,24 @@ class TestInit:
         assert agent_models
         assert set(agent_models.values()) <= available_models
 
+    def test_generated_agents_use_v2_permissions(self, tmp_path: Path) -> None:
+        """Agent frontmatter is the V2 rule list, never the V1 permission map (#6)."""
+        import yaml
+
+        _write_fastapi_pyproject(tmp_path)
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        agents = list((tmp_path / ".opencode" / "agents").glob("*.md"))
+        assert agents
+        for agent_path in agents:
+            frontmatter = agent_path.read_text(encoding="utf-8").split("---", 2)[1]
+            parsed = yaml.safe_load(frontmatter)
+            assert "permission" not in parsed, f"{agent_path.name} still uses V1 permission"
+            assert "permissions" in parsed, f"{agent_path.name} has no V2 permissions"
+            for rule in parsed["permissions"]:
+                assert set(rule) == {"action", "resource", "effect"}, f"{agent_path.name}: {rule}"
+                assert rule["effect"] in {"allow", "ask", "deny"}
+
     def test_generated_agents_md_keeps_the_language_rule(self, tmp_path: Path) -> None:
         """Regeneration must not drop the org-wide language convention."""
         _write_fastapi_pyproject(tmp_path)
@@ -113,7 +131,7 @@ class TestInit:
 
         for filename in ("opencode.json", "opencode.template.json"):
             data = json.loads((tmp_path / filename).read_text(encoding="utf-8"))
-            mcp_servers = data.get("mcp", {})
+            mcp_servers = data["mcp"]["servers"]
             assert "github" not in mcp_servers
             assert "context7" not in mcp_servers
             serialized_servers = json.dumps(mcp_servers)
@@ -128,7 +146,9 @@ class TestInit:
             content = (tmp_path / ".opencode" / "agents" / f"{agent_name}.md").read_text(encoding="utf-8")
             assert "project #1" in content
             assert "project #2" not in content
-            assert "projectV2(number:1)" in content
+            assert "n3rv board sync" in content
+            assert "gh project item-edit" not in content
+            assert "ITEM_ID=$(gh api graphql" not in content
 
     def test_commands_created_for_detected_tools(self, tmp_path: Path) -> None:
         _write_fastapi_pyproject(tmp_path)
@@ -260,9 +280,12 @@ class TestInit:
         assert "provider" not in data
 
         # n3rv MCP servers are inherited from the user's global config rather
-        # than redeclared here with unresolvable bare commands.
-        assert "n3rv-memory" not in data.get("mcp", {})
-        assert "n3rv-hub" not in data.get("mcp", {})
+        # than redeclared here with unresolvable bare commands. V2 nests them
+        # under mcp.servers, never directly under mcp.
+        assert "servers" in data["mcp"]
+        assert "n3rv-memory" not in data["mcp"]["servers"]
+        assert "n3rv-hub" not in data["mcp"]["servers"]
+        assert all(key in ("servers", "timeout") for key in data["mcp"])
 
         instructions = data.get("instructions", [])
         assert "AGENTS.md" in instructions
@@ -270,8 +293,12 @@ class TestInit:
         assert "SECURITY.md" in instructions
         assert any("docs" in i for i in instructions)
 
-        assert "tools" in data
-        assert data["tools"].get("websearch") is True
+        # V2 shapes: commands/agents/permissions. V1 tools/agent/command are gone.
+        assert "tools" not in data
+        assert "agent" not in data
+        assert "command" not in data
+        assert data["agents"]["build"]["disabled"] is True
+        assert {"action": "websearch", "resource": "*", "effect": "allow"} in data["permissions"]
 
 
 class TestUpdate:

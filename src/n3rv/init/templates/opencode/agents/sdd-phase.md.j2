@@ -1,10 +1,12 @@
 ---
-description: {{ phase_description }}
+description: "{{ phase_description }}"
 mode: subagent
 model: {{ phase_model }}
-hidden: true{% if phase_edit_denied %}
-permission:
-  edit: deny{% endif %}
+hidden: true
+permissions:
+  - action: edit
+    resource: "*"
+    effect: {{ "deny" if phase_edit_denied else "allow" }}
 ---
 Load the `{{ phase_skill }}` skill and execute it for the given change_id.
 {% for step in phase_steps %}

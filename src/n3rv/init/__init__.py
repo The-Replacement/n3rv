@@ -5,16 +5,20 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from n3rv import board
 from n3rv.init.analyzer import analyze_project
+from n3rv.init.analyzer.profile import ProjectProfile
 from n3rv.init.binary import resolve_n3rv_binary
 from n3rv.init.context import ProjectContext
 from n3rv.init.detector import detect_stack
+from n3rv.init.lockfile import load_lockfile, record_entry, save_lockfile, save_managed_state
 from n3rv.init.registry import write_registry
 from n3rv.init.renderer import TemplateEngine
 from n3rv.init.writer import (
     WriteResult,
     configure_git_hooks,
     configure_gitignore,
+    managed_region,
     write_file,
 )
 
@@ -495,12 +499,14 @@ def run_init(
         render_ctx = {
             **context.to_dict(),
             **profile.to_j2_context(),
+            **board.render_context(),
             "n3rv_binary": n3rv_binary,
         }
 
         created_count = 0
         skipped_count = 0
         error_count = 0
+        written: list[tuple[str, str]] = []
 
         # Scaffold AGENTS.md via Jinja2 template
         try:
@@ -520,9 +526,11 @@ def run_init(
                 if result in (WriteResult.CREATED, WriteResult.OVERWRITTEN):
                     print("✓ Created AGENTS.md")
                     created_count += 1
+                    written.append(("opencode/agents.md.j2", "AGENTS.md"))
                 elif result == WriteResult.UPDATED:
                     print("✓ Updated AGENTS.md")
                     created_count += 1
+                    written.append(("opencode/agents.md.j2", "AGENTS.md"))
         except Exception as exc:
             print(f"✗ Error scaffolding AGENTS.md: {exc}")
             error_count += 1
@@ -565,12 +573,15 @@ def run_init(
                 if result == WriteResult.CREATED:
                     print(f"✓ Created {output_path}")
                     created_count += 1
+                    written.append((template_name, output_path))
                 elif result == WriteResult.UPDATED:
                     print(f"✓ Updated {output_path}")
                     created_count += 1
+                    written.append((template_name, output_path))
                 elif result == WriteResult.OVERWRITTEN:
                     print(f"✓ Overwritten {output_path}")
                     created_count += 1
+                    written.append((template_name, output_path))
                 elif result == WriteResult.SKIPPED:
                     print(f"⊘ Skipped {output_path} (already exists)")
                     skipped_count += 1
@@ -595,6 +606,8 @@ def run_init(
         except Exception as exc:
             print(f"⚠ Skill registry not written: {exc}")
 
+        _record_generated_lockfile(root, templates_dir, written, profile)
+
         print(f"\nDone. {created_count} files created/updated, {skipped_count} skipped.")
         if error_count > 0:
             print(f"⚠ {error_count} errors occurred")
@@ -607,3 +620,24 @@ def run_init(
     except Exception as exc:
         print(f"✗ Fatal error: {exc}")
         return 1
+
+
+def _record_generated_lockfile(
+    root: Path, templates_dir: Path, written: list[tuple[str, str]], profile: ProjectProfile
+) -> None:
+    """Record what this run generated so later updates can tell drift from ownership."""
+    entries = dict(load_lockfile(root).get("entries") or {})
+    for template_name, output_path in written:
+        target = root / output_path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8")
+        region = managed_region(text) if template_name == "opencode/agents.md.j2" else None
+        entries[output_path] = record_entry(
+            target,
+            template_name,
+            template_path=templates_dir / template_name,
+            managed_region=region,
+        )
+    save_lockfile(root, entries)
+    save_managed_state(root, {"mcp_servers": sorted(server.name for server in profile.mcp_servers)})

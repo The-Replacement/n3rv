@@ -79,7 +79,7 @@ def test_deep_merge_empty_overlay():
 
 def test_manifest_has_expected_entries():
     """Test manifest has expected number of entries."""
-    assert len(FILE_UPDATE_MANIFEST) == 41
+    assert len(FILE_UPDATE_MANIFEST) == 44
 
 
 def test_manifest_marker_files():
@@ -93,8 +93,9 @@ def test_manifest_json_merge_files():
     json_files = [e for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.JSON_MERGE]
     paths = {e.output_path for e in json_files}
     assert "opencode.json" in paths
+    assert "opencode.template.json" in paths
     assert ".opencode/package.json" in paths
-    assert len(json_files) == 2
+    assert len(json_files) == 3
 
 
 def test_manifest_overwrite_files():
@@ -108,20 +109,36 @@ def test_manifest_overwrite_files():
     assert len(ow_files) == 6
 
 
-def test_manifest_skip_default_files_are_commands():
-    """Test skip default files are SDD skills, commands, and agents."""
+def test_manifest_skip_default_entries_are_commands():
+    """Only slash commands are skip-default; agents and skills are generated."""
     skip_files = [e for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.SKIP_DEFAULT]
-    assert len(skip_files) == 30
     paths = {e.output_path for e in skip_files}
-    assert ".opencode/skills/code/SKILL.md" in paths
-    assert ".opencode/skills/testing/SKILL.md" in paths
-    assert ".opencode/skills/commits/SKILL.md" in paths
-    assert ".opencode/skills/sdd-explore/SKILL.md" in paths
-    assert ".opencode/skills/judgment-day/SKILL.md" in paths
-    assert ".opencode/commands/sdd-new.md" in paths
-    assert ".opencode/agents/sdd-explorer.md" in paths
+    assert paths == {
+        ".opencode/commands/sdd-new.md",
+        ".opencode/commands/judgment-day.md",
+        ".opencode/commands/review.md",
+        ".opencode/commands/handoff.md",
+    }
+
+
+def test_manifest_generated_covers_agents_and_skills():
+    """Agents and skills are refreshed by every update (#5)."""
+    generated = [e for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.GENERATED]
+    paths = {e.output_path for e in generated}
+    assert ".opencode/agents/n3rv.md" in paths
     assert ".opencode/agents/n3rv-scout.md" in paths
     assert ".opencode/agents/n3rv-sensor.md" in paths
+    assert ".opencode/agents/sdd-explorer.md" in paths
+    assert ".opencode/agents/project-ops.md" in paths
+    assert ".opencode/skills/code/SKILL.md" in paths
+    assert ".opencode/skills/sdd-explore/SKILL.md" in paths
+    assert ".opencode/skills/project-board/SKILL.md" in paths
+
+
+def test_manifest_project_owned_files_are_guarded():
+    """AGENTS.md and .githooks/pre-push belong to the project (#5)."""
+    owned = {e.output_path for e in FILE_UPDATE_MANIFEST if e.project_owned}
+    assert owned == {"AGENTS.md", ".githooks/pre-push"}
 
 
 def test_manifest_git_hooks_are_executable():
@@ -186,3 +203,130 @@ def test_create_if_missing_dry_run_reports_created(tmp_path: Path):
 
     assert result.result == "CREATED"
     assert not target.exists()
+
+
+# ── convergence safety (#5) ───────────────────────────────────────────
+
+
+def test_update_refreshes_generated_agents_and_skills(initialized_project: Path):
+    """`n3rv update` refreshes .opencode/agents and .opencode/skills (#5)."""
+    from n3rv.init.update import run_update
+
+    agent = initialized_project / ".opencode" / "agents" / "n3rv.md"
+    skill = initialized_project / ".opencode" / "skills" / "code" / "SKILL.md"
+    agent.write_text("tampered agent\n", encoding="utf-8")
+    skill.write_text("tampered skill\n", encoding="utf-8")
+
+    run_update(initialized_project)
+
+    assert "N3RV orchestration agent" in agent.read_text(encoding="utf-8")
+    assert "tampered" not in agent.read_text(encoding="utf-8")
+    assert skill.read_text(encoding="utf-8") != "tampered skill\n"
+
+
+def test_update_reports_every_file_it_did_not_touch(initialized_project: Path, capsys):
+    """Skipped and unchanged files are named, not silently dropped (#5)."""
+    from n3rv.init.update import run_update
+
+    run_update(initialized_project)
+    capsys.readouterr()
+
+    run_update(initialized_project)
+
+    output = capsys.readouterr().out
+    assert "Not touched" in output
+    assert ".opencode/commands/sdd-new.md" in output
+    assert "use --force-commands to update" in output
+
+
+def test_update_removes_retired_generated_mcp_servers(initialized_project: Path):
+    """A server the generator no longer recommends is pruned (#5)."""
+    import json
+
+    from n3rv.init.lockfile import save_managed_state
+    from n3rv.init.update import run_update
+
+    config_path = initialized_project / "opencode.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data["mcp"]["servers"]["retired"] = {"type": "local", "command": ["retired-server"]}
+    data["mcp"]["servers"]["user-server"] = {"type": "local", "command": ["my-own-server"]}
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+    save_managed_state(initialized_project, {"mcp_servers": ["sequential-thinking", "retired"]})
+
+    run_update(initialized_project)
+
+    servers = json.loads(config_path.read_text(encoding="utf-8"))["mcp"]["servers"]
+    assert "retired" not in servers
+    assert "user-server" in servers
+    assert "sequential-thinking" in servers
+
+
+def test_update_migrates_flat_v1_mcp_servers(initialized_project: Path):
+    """V1 flat mcp.<name> entries move under mcp.servers (#6)."""
+    import json
+
+    from n3rv.init.lockfile import save_managed_state
+    from n3rv.init.update import run_update
+
+    config_path = initialized_project / "opencode.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data["mcp"].pop("servers", None)
+    data["mcp"]["sequential-thinking"] = {"type": "local", "command": ["flat-v1"]}
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+    save_managed_state(initialized_project, {"mcp_servers": ["sequential-thinking"]})
+
+    run_update(initialized_project)
+
+    mcp = json.loads(config_path.read_text(encoding="utf-8"))["mcp"]
+    assert "sequential-thinking" not in mcp
+    assert mcp["servers"]["sequential-thinking"]["type"] == "local"
+
+
+def _tamper_inside_markers(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    start = text.find(MARKER_START) + len(MARKER_START)
+    path.write_text(f"{text[:start]}\nUSER HACKED THIS BLOCK\n{text[start:]}", encoding="utf-8")
+
+
+def test_update_skips_agents_md_when_generated_block_was_edited(initialized_project: Path):
+    """AGENTS.md is project-owned once its generated block is edited (#5)."""
+    from n3rv.init.update import run_update
+
+    agents_md = initialized_project / "AGENTS.md"
+    _tamper_inside_markers(agents_md)
+
+    run_update(initialized_project)
+
+    assert "USER HACKED THIS BLOCK" in agents_md.read_text(encoding="utf-8")
+
+
+def test_update_force_project_files_restores_agents_md(initialized_project: Path):
+    """--force-project-files is the explicit opt-in."""
+    from n3rv.init.update import run_update
+
+    agents_md = initialized_project / "AGENTS.md"
+    _tamper_inside_markers(agents_md)
+
+    run_update(initialized_project, force_project_files=True)
+
+    content = agents_md.read_text(encoding="utf-8")
+    assert "USER HACKED THIS BLOCK" not in content
+    assert MARKER_START in content
+
+
+def test_update_preserves_user_prose_outside_agents_md_markers(initialized_project: Path):
+    """Editing outside the marker block is expected and never blocks updates."""
+    from n3rv.init.update import run_update
+
+    agents_md = initialized_project / "AGENTS.md"
+    agents_md.write_text(
+        agents_md.read_text(encoding="utf-8") + "\n## My Notes\nkeep me around\n",
+        encoding="utf-8",
+    )
+
+    run_update(initialized_project)
+
+    content = agents_md.read_text(encoding="utf-8")
+    assert "## My Notes" in content
+    assert "keep me around" in content
+    assert "Language: English everywhere" in content

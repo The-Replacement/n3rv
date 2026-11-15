@@ -15,12 +15,22 @@ from n3rv.init.update import run_update
 runner = CliRunner()
 
 
-def test_update_overwrites_infrastructure_files(initialized_project: Path):
-    """Test overwrite strategy replaces files unconditionally."""
+def test_update_skips_modified_project_owned_hook(initialized_project: Path):
+    """A project-owned hook modified after generation is never clobbered (#5)."""
     hook = initialized_project / ".githooks/pre-push"
-    hook.write_text("# old content")
+    hook.write_text("# custom project hook\n")
 
     run_update(initialized_project, dry_run=False, force_commands=False)
+
+    assert hook.read_text() == "# custom project hook\n"
+
+
+def test_update_force_project_files_overwrites_hook(initialized_project: Path):
+    """--force-project-files is the explicit opt-in to replace project files."""
+    hook = initialized_project / ".githooks/pre-push"
+    hook.write_text("# custom project hook\n")
+
+    run_update(initialized_project, dry_run=False, force_commands=False, force_project_files=True)
 
     assert "#!/usr/bin/env python3" in hook.read_text()
 
@@ -107,8 +117,8 @@ def test_update_only_overwrite_targets_only_overwrite_files(initialized_project:
     result = run_update(initialized_project, dry_run=False, force_commands=False, only="overwrite")
 
     assert result == 0
-    assert hook.read_text() != "# custom hook\n"
-    assert "#!/usr/bin/env python3" in hook.read_text()
+    # The hook is project-owned and was modified: it stays untouched.
+    assert hook.read_text() == "# custom hook\n"
     assert agents_md.read_text() == "# custom agents rules\n"
 
 

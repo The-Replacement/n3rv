@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from n3rv import board
 from n3rv.init import N3RV_DIR, NERV_DIR, SDD_PHASE_MAP
 from n3rv.init.analyzer import analyze_project
 from n3rv.init.binary import resolve_n3rv_binary
@@ -17,9 +19,11 @@ from n3rv.init.context import ProjectContext
 from n3rv.init.detector import detect_stack
 from n3rv.init.lockfile import (
     diff_lockfile,
+    load_lockfile,
+    load_managed_state,
     record_entry,
     save_lockfile,
-    update_lockfile_entry,
+    save_managed_state,
 )
 from n3rv.init.registry import write_registry
 from n3rv.init.renderer import TemplateEngine
@@ -28,6 +32,7 @@ from n3rv.init.writer import (
     MARKER_START,
     configure_git_hooks,
     configure_gitignore,
+    managed_region,
     validate_markers,
     write_file,
 )
@@ -41,6 +46,7 @@ class UpdateStrategy(StrEnum):
     OVERWRITE = "overwrite"
     SKIP_DEFAULT = "skip_default"
     CREATE_IF_MISSING = "create_if_missing"
+    GENERATED = "generated"
 
 
 _ONLY_CATEGORY_ALIASES: dict[str, UpdateStrategy] = {
@@ -53,6 +59,7 @@ _ONLY_CATEGORY_ALIASES: dict[str, UpdateStrategy] = {
     "skip_default": UpdateStrategy.SKIP_DEFAULT,
     "create-if-missing": UpdateStrategy.CREATE_IF_MISSING,
     "create_if_missing": UpdateStrategy.CREATE_IF_MISSING,
+    "generated": UpdateStrategy.GENERATED,
 }
 
 
@@ -64,6 +71,7 @@ class UpdateEntry:
     output_path: str
     strategy: UpdateStrategy
     make_executable: bool = False
+    project_owned: bool = False
 
 
 @dataclass
@@ -91,15 +99,27 @@ class UpdateSummary:
         return sum(1 for r in self.results if r.result == "SKIPPED")
 
     @property
+    def unchanged_count(self) -> int:
+        return sum(1 for r in self.results if r.result == "UNCHANGED")
+
+    @property
+    def untouched(self) -> list[UpdateResult]:
+        """Every file this run deliberately did not write."""
+        return [r for r in self.results if r.result in ("SKIPPED", "UNCHANGED")]
+
+    @property
     def error_count(self) -> int:
         return sum(1 for r in self.results if r.result == "ERROR")
 
 
 FILE_UPDATE_MANIFEST: list[UpdateEntry] = [
+    # AGENTS.md carries a generator marker block plus user prose: guard the
+    # block, preserve the prose.
     UpdateEntry(
         "opencode/agents.md.j2",
         "AGENTS.md",
         UpdateStrategy.MARKER_MERGE,
+        project_owned=True,
     ),
     UpdateEntry("n3rv/a2a-config.yaml.j2", ".n3rv/a2a-config.yaml", UpdateStrategy.OVERWRITE),
     UpdateEntry(
@@ -108,11 +128,15 @@ FILE_UPDATE_MANIFEST: list[UpdateEntry] = [
         UpdateStrategy.OVERWRITE,
     ),
     UpdateEntry("opencode.json.j2", "opencode.json", UpdateStrategy.JSON_MERGE),
+    UpdateEntry("opencode.template.json.j2", "opencode.template.json", UpdateStrategy.JSON_MERGE),
+    # The pre-push hook is project-owned once it exists: radio's deployment
+    # gates are not n3rv's to overwrite. --force-project-files opts in.
     UpdateEntry(
         "githooks/pre-push.py.j2",
         ".githooks/pre-push",
         UpdateStrategy.OVERWRITE,
         make_executable=True,
+        project_owned=True,
     ),
     # Shared module (must be written before tools/plugins that import it)
     UpdateEntry(
@@ -142,66 +166,66 @@ FILE_UPDATE_MANIFEST: list[UpdateEntry] = [
         ".opencode/package.json",
         UpdateStrategy.JSON_MERGE,
     ),
-    # Skills in opencode-native path
+    # Skills in opencode-native path — generator-managed, refreshed every update
     UpdateEntry(
         "opencode/skills/code/SKILL.md.j2",
         ".opencode/skills/code/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/testing/SKILL.md.j2",
         ".opencode/skills/testing/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/commits/SKILL.md.j2",
         ".opencode/skills/commits/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-explore/SKILL.md.j2",
         ".opencode/skills/sdd-explore/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-propose/SKILL.md.j2",
         ".opencode/skills/sdd-propose/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-spec/SKILL.md.j2",
         ".opencode/skills/sdd-spec/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-design/SKILL.md.j2",
         ".opencode/skills/sdd-design/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-tasks/SKILL.md.j2",
         ".opencode/skills/sdd-tasks/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-apply/SKILL.md.j2",
         ".opencode/skills/sdd-apply/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-verify/SKILL.md.j2",
         ".opencode/skills/sdd-verify/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/sdd-archive/SKILL.md.j2",
         ".opencode/skills/sdd-archive/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/judgment-day/SKILL.md.j2",
         ".opencode/skills/judgment-day/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     # Slash commands
     UpdateEntry(
@@ -231,7 +255,7 @@ FILE_UPDATE_MANIFEST: list[UpdateEntry] = [
     ),
     # SDD phase sub-agents (generated from SDD_PHASE_MAP)
     *[
-        UpdateEntry("opencode/agents/sdd-phase.md.j2", f".opencode/agents/{slug}.md", UpdateStrategy.SKIP_DEFAULT)
+        UpdateEntry("opencode/agents/sdd-phase.md.j2", f".opencode/agents/{slug}.md", UpdateStrategy.GENERATED)
         for slug in [
             "sdd-explorer",
             "sdd-proposer",
@@ -246,40 +270,51 @@ FILE_UPDATE_MANIFEST: list[UpdateEntry] = [
     UpdateEntry(
         "opencode/agents/git-ops.md.j2",
         ".opencode/agents/git-ops.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/agents/github-ops.md.j2",
         ".opencode/agents/github-ops.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     # Git & GitHub skills
     UpdateEntry(
         "opencode/skills/git-ops/SKILL.md.j2",
         ".opencode/skills/git-ops/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/skills/github-ops/SKILL.md.j2",
         ".opencode/skills/github-ops/SKILL.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     # N3RV primary agent
     UpdateEntry(
         "opencode/agents/n3rv.md.j2",
         ".opencode/agents/n3rv.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     # Specialist sub-agents (external knowledge + environment awareness)
     UpdateEntry(
         "opencode/agents/n3rv-scout.md.j2",
         ".opencode/agents/n3rv-scout.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
     ),
     UpdateEntry(
         "opencode/agents/n3rv-sensor.md.j2",
         ".opencode/agents/n3rv-sensor.md",
-        UpdateStrategy.SKIP_DEFAULT,
+        UpdateStrategy.GENERATED,
+    ),
+    # Project board operations
+    UpdateEntry(
+        "opencode/agents/project-ops.md.j2",
+        ".opencode/agents/project-ops.md",
+        UpdateStrategy.GENERATED,
+    ),
+    UpdateEntry(
+        "opencode/skills/project-board/SKILL.md.j2",
+        ".opencode/skills/project-board/SKILL.md",
+        UpdateStrategy.GENERATED,
     ),
 ]
 
@@ -418,6 +453,7 @@ def run_update(
     show_diff: bool = False,
     force_commands: bool = False,
     only: str | None = None,
+    force_project_files: bool = False,
 ) -> int:
     try:
         if not _check_nerv_migration_update(root):
@@ -441,10 +477,15 @@ def run_update(
             print("✗ Error: n3rv binary not found next to the interpreter or on PATH")
             return 1
 
-        render_ctx = {**context.to_dict(), "n3rv_binary": n3rv_binary}
+        render_ctx = {
+            **context.to_dict(),
+            "n3rv_binary": n3rv_binary,
+            **board.render_context(),
+        }
 
         profile = analyze_project(root, context)
         render_ctx.update(profile.to_j2_context())
+        recommended_mcp = {server.name for server in profile.mcp_servers}
 
         summary = UpdateSummary()
         entries = _select_manifest_entries(only)
@@ -469,6 +510,8 @@ def run_update(
             for path, reason in sorted(drift.items()):
                 print(f"  ⚠ {path}: {reason}")
 
+        lock_entries: dict[str, Any] = dict(load_lockfile(root).get("entries") or {})
+
         for entry in entries:
             # Compute diff content before processing
             old_content = ""
@@ -477,19 +520,35 @@ def run_update(
                 old_content = target_path.read_text(encoding="utf-8")
             new_content = engine.render(entry.template_name, _entry_render_context(entry, render_ctx))
 
-            result = _process_entry(entry, root, engine, render_ctx, dry_run, force_commands)
+            result = _process_entry(
+                entry,
+                root,
+                engine,
+                render_ctx,
+                dry_run,
+                force_commands,
+                force_project_files,
+                recommended_mcp,
+            )
             summary.results.append(result)
             _print_result(result, dry_run)
 
-            if show_diff and old_content and result.result not in ("ERROR", "SKIPPED"):
+            if show_diff and old_content and result.result not in ("ERROR", "SKIPPED", "UNCHANGED"):
                 _show_diff(entry.output_path, old_content, new_content)
 
-            # Record lockfile entry for successfully written files
+            # Record the template revision only for output this generator wrote
+            # or verified. Skipped files keep whatever provenance they had.
             if not dry_run and result.result not in ("ERROR", "SKIPPED"):
                 target = root / entry.output_path
                 if target.is_file():
-                    lock_entry = record_entry(target, entry.template_name)
-                    update_lockfile_entry(root, entry.output_path, lock_entry)
+                    text = target.read_text(encoding="utf-8")
+                    region = _managed_region(text) if entry.strategy == UpdateStrategy.MARKER_MERGE else None
+                    lock_entries[entry.output_path] = record_entry(
+                        target,
+                        entry.template_name,
+                        template_path=_template_source(engine, entry.template_name),
+                        managed_region=region,
+                    )
 
         _print_summary(summary, dry_run)
 
@@ -508,15 +567,9 @@ def run_update(
             if configure_gitignore(root):
                 print("✓ Added n3rv patterns to .gitignore")
 
-            # Final lockfile save with all entries
-            full_rendered: dict[str, Path] = {}
-            for entry in entries:
-                if (root / entry.output_path).is_file():
-                    full_rendered[entry.output_path] = root / entry.output_path
-            lock_entries: dict[str, Any] = {}
-            for rel, abspath in full_rendered.items():
-                lock_entries[rel] = record_entry(abspath, "")
             save_lockfile(root, lock_entries)
+            if any(entry.output_path == "opencode.json" for entry in entries):
+                save_managed_state(root, {"mcp_servers": sorted(recommended_mcp)})
 
         return 1 if summary.error_count > 0 else 0
 
@@ -540,21 +593,25 @@ def _process_entry(
     render_ctx: dict,
     dry_run: bool,
     force_commands: bool,
+    force_project_files: bool = False,
+    recommended_mcp: set[str] | None = None,
 ) -> UpdateResult:
     try:
         content = engine.render(entry.template_name, _entry_render_context(entry, render_ctx))
         target = root / entry.output_path
 
         if entry.strategy == UpdateStrategy.MARKER_MERGE:
-            return _handle_marker_merge(entry, target, content, dry_run)
+            return _handle_marker_merge(entry, root, target, content, dry_run, force_project_files)
         elif entry.strategy == UpdateStrategy.JSON_MERGE:
-            return _handle_json_merge(entry, target, content, dry_run)
+            return _handle_json_merge(entry, root, target, content, dry_run, recommended_mcp)
         elif entry.strategy == UpdateStrategy.OVERWRITE:
-            return _handle_overwrite(entry, target, content, dry_run)
+            return _handle_overwrite(entry, root, target, content, dry_run, force_project_files)
         elif entry.strategy == UpdateStrategy.SKIP_DEFAULT:
-            return _handle_skip_default(entry, target, content, dry_run, force_commands)
+            return _handle_skip_default(entry, root, target, content, dry_run, force_commands)
         elif entry.strategy == UpdateStrategy.CREATE_IF_MISSING:
             return _handle_create_if_missing(entry, target, content, dry_run)
+        elif entry.strategy == UpdateStrategy.GENERATED:
+            return _handle_generated(entry, root, target, content, dry_run, force_project_files)
         else:
             return UpdateResult(
                 entry.output_path,
@@ -567,7 +624,53 @@ def _process_entry(
         return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=str(exc))
 
 
-def _handle_marker_merge(entry: UpdateEntry, target: Path, content: str, dry_run: bool) -> UpdateResult:
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _managed_region(text: str) -> str | None:
+    """Return the generator-owned marker block, if the file has one."""
+    return managed_region(text)
+
+
+def _locked_managed_hash(root: Path, output_path: str) -> str | None:
+    entry = (load_lockfile(root).get("entries") or {}).get(output_path)
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("managed_sha256") or entry.get("sha256")
+    return value if isinstance(value, str) else None
+
+
+def _project_owned_modified(entry: UpdateEntry, root: Path, target: Path) -> bool:
+    """True when the file exists and differs from what this generator last wrote."""
+    if not entry.project_owned or not target.exists():
+        return False
+    locked = _locked_managed_hash(root, entry.output_path)
+    if locked is None:
+        return True
+    text = target.read_text(encoding="utf-8")
+    if entry.strategy == UpdateStrategy.MARKER_MERGE:
+        region = _managed_region(text)
+        return region is None or _sha256_text(region) != locked
+    return _sha256_text(text) != locked
+
+
+def _template_source(engine: TemplateEngine, template_name: str) -> Path | None:
+    try:
+        _source, filename, _uptodate = engine.env.loader.get_source(engine.env, template_name)
+    except Exception:
+        return None
+    return Path(filename)
+
+
+def _handle_marker_merge(
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    content: str,
+    dry_run: bool,
+    force_project_files: bool = False,
+) -> UpdateResult:
     content_clean = content
     if MARKER_START in content and MARKER_END in content:
         start_idx = content.find(MARKER_START)
@@ -596,6 +699,14 @@ def _handle_marker_merge(entry: UpdateEntry, target: Path, content: str, dry_run
     for warning in warnings:
         print(f"⚠ {entry.output_path}: {warning}", flush=True)
 
+    if _project_owned_modified(entry, root, target) and not force_project_files:
+        return UpdateResult(
+            entry.output_path,
+            entry.strategy,
+            "SKIPPED",
+            warning="project-owned file modified since last generation (use --force-project-files)",
+        )
+
     if MARKER_START in existing_content and MARKER_END in existing_content:
         if not dry_run:
             result = write_file(
@@ -622,7 +733,48 @@ def _handle_marker_merge(entry: UpdateEntry, target: Path, content: str, dry_run
         return UpdateResult(entry.output_path, entry.strategy, "SKIPPED", warning="No markers found")
 
 
-def _handle_json_merge(entry: UpdateEntry, target: Path, content: str, dry_run: bool) -> UpdateResult:
+def _reconcile_mcp_servers(merged: dict[str, Any], root: Path, recommended: set[str]) -> list[str]:
+    """Prune generator-managed servers, preserve user-added ones, migrate V1 layout."""
+    mcp = merged.get("mcp")
+    if not isinstance(mcp, dict):
+        return []
+    previous = set(load_managed_state(root).get("mcp_servers") or [])
+    servers = mcp.get("servers")
+    if not isinstance(servers, dict):
+        servers = {}
+    changes: list[str] = []
+
+    # V1 had servers directly under "mcp". Move generator-managed ones into
+    # "mcp.servers" (the template already provides them) and keep user servers.
+    for name in list(mcp):
+        if name in ("servers", "timeout"):
+            continue
+        value = mcp[name]
+        if not isinstance(value, dict) or "type" not in value:
+            continue
+        if name in previous or name in recommended:
+            del mcp[name]
+            if name not in servers:
+                servers[name] = value
+            changes.append(f"migrated {name} to mcp.servers")
+
+    for name in sorted(previous):
+        if name not in recommended and name in servers:
+            del servers[name]
+            changes.append(f"removed {name} (no longer recommended)")
+
+    mcp["servers"] = servers
+    return changes
+
+
+def _handle_json_merge(
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    content: str,
+    dry_run: bool,
+    recommended_mcp: set[str] | None = None,
+) -> UpdateResult:
     try:
         try:
             template_data = json.loads(content)
@@ -635,10 +787,19 @@ def _handle_json_merge(entry: UpdateEntry, target: Path, content: str, dry_run: 
             )
 
         if not target.exists():
+            merged = template_data
+            changes = (
+                _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
+            )
             if not dry_run:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(template_data, indent=4) + "\n", encoding="utf-8")
-            return UpdateResult(entry.output_path, entry.strategy, "CREATED")
+                target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
+            return UpdateResult(
+                entry.output_path,
+                entry.strategy,
+                "CREATED",
+                warning="; ".join(changes) or None,
+            )
 
         try:
             existing_data = json.loads(target.read_text(encoding="utf-8"))
@@ -651,17 +812,68 @@ def _handle_json_merge(entry: UpdateEntry, target: Path, content: str, dry_run: 
             )
 
         merged = deep_merge_json(existing_data, template_data)
+        changes = _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
 
         if not dry_run:
             target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
 
-        return UpdateResult(entry.output_path, entry.strategy, "UPDATED")
+        return UpdateResult(
+            entry.output_path,
+            entry.strategy,
+            "UPDATED",
+            warning="; ".join(changes) or None,
+        )
 
     except Exception as exc:
         return UpdateResult(entry.output_path, entry.strategy, "ERROR", warning=str(exc))
 
 
-def _handle_overwrite(entry: UpdateEntry, target: Path, content: str, dry_run: bool) -> UpdateResult:
+def _handle_generated(
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    content: str,
+    dry_run: bool,
+    force_project_files: bool = False,
+) -> UpdateResult:
+    """Refresh a generator-managed file; report files that already match."""
+    if target.exists():
+        if _project_owned_modified(entry, root, target) and not force_project_files:
+            return UpdateResult(
+                entry.output_path,
+                entry.strategy,
+                "SKIPPED",
+                warning="modified since last generation (use --force-project-files)",
+            )
+        if target.read_text(encoding="utf-8") == content:
+            return UpdateResult(entry.output_path, entry.strategy, "UNCHANGED")
+    if not dry_run:
+        result = write_file(
+            target,
+            content,
+            force=True,
+            use_markers=False,
+            make_executable=entry.make_executable,
+        )
+        return UpdateResult(entry.output_path, entry.strategy, result.upper())
+    return UpdateResult(entry.output_path, entry.strategy, "CREATED" if not target.exists() else "OVERWRITTEN")
+
+
+def _handle_overwrite(
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    content: str,
+    dry_run: bool,
+    force_project_files: bool = False,
+) -> UpdateResult:
+    if _project_owned_modified(entry, root, target) and not force_project_files:
+        return UpdateResult(
+            entry.output_path,
+            entry.strategy,
+            "SKIPPED",
+            warning="project-owned file modified since last generation (use --force-project-files)",
+        )
     if not dry_run:
         result = write_file(
             target,
@@ -679,7 +891,12 @@ def _handle_overwrite(entry: UpdateEntry, target: Path, content: str, dry_run: b
 
 
 def _handle_skip_default(
-    entry: UpdateEntry, target: Path, content: str, dry_run: bool, force_commands: bool
+    entry: UpdateEntry,
+    root: Path,
+    target: Path,
+    content: str,
+    dry_run: bool,
+    force_commands: bool,
 ) -> UpdateResult:
     if not force_commands:
         return UpdateResult(
@@ -689,12 +906,12 @@ def _handle_skip_default(
             warning="use --force-commands to update",
         )
     else:
-        return _handle_overwrite(entry, target, content, dry_run)
+        return _handle_overwrite(entry, root, target, content, dry_run)
 
 
 def _handle_create_if_missing(entry: UpdateEntry, target: Path, content: str, dry_run: bool) -> UpdateResult:
     if target.exists():
-        return UpdateResult(entry.output_path, entry.strategy, "SKIPPED")
+        return UpdateResult(entry.output_path, entry.strategy, "SKIPPED", warning="already exists")
 
     if not dry_run:
         result = write_file(
@@ -736,17 +953,31 @@ def _print_result(result: UpdateResult, dry_run: bool):
         print(f"{prefix}✓ Overwritten {result.path}")
     elif result.result == "SKIPPED":
         print(f"{prefix}⊘ Skipped {result.path}")
+    elif result.result == "UNCHANGED":
+        print(f"{prefix}= Unchanged {result.path}")
     elif result.result == "ERROR":
         print(f"{prefix}✗ Error {result.path}: {result.warning}")
+    if result.warning and result.result in ("CREATED", "UPDATED", "OVERWRITTEN"):
+        print(f"  ↳ {result.warning}")
 
 
 def _print_summary(summary: UpdateSummary, dry_run: bool):
     prefix = "[DRY RUN] " if dry_run else ""
     print(
-        f"\n{prefix}Done. ✓ {summary.updated_count} updated / ⊘ {summary.skipped_count} skipped",
+        f"\n{prefix}Done. ✓ {summary.updated_count} updated"
+        f" / = {summary.unchanged_count} unchanged"
+        f" / ⊘ {summary.skipped_count} skipped",
         end="",
     )
     if summary.error_count > 0:
         print(f" / ✗ {summary.error_count} errors")
     else:
         print()
+
+    untouched = summary.untouched
+    if untouched:
+        print(f"\n{prefix}Not touched ({len(untouched)}):")
+        for result in untouched:
+            marker = "=" if result.result == "UNCHANGED" else "⊘"
+            reason = result.warning or "already up to date"
+            print(f"  {marker} {result.path} — {reason}")

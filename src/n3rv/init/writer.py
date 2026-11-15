@@ -169,6 +169,17 @@ def configure_gitignore(root: Path) -> bool:
     return True
 
 
+def managed_region(text: str) -> str | None:
+    """Return the generator-owned marker block, if the file has one."""
+    from n3rv.init.update import MARKER_END, MARKER_START
+
+    start = text.find(MARKER_START)
+    end = text.find(MARKER_END)
+    if start == -1 or end == -1:
+        return None
+    return text[start : end + len(MARKER_END)]
+
+
 def validate_markers(content: str) -> list[str]:
     """Check if content has valid marker pairs.
 

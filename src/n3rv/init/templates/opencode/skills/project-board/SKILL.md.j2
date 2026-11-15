@@ -19,108 +19,85 @@ user-invocable: false
 
 ## Board Identity
 
-All commands target the **The-Replacement Roadmap** project board.
+All commands target the **The-Replacement Roadmap** project board. These
+values come from `src/n3rv/board.py`; never retype an id from memory.
 
 | Property | Value |
 |----------|-------|
-| Project number | `1` |
-| Owner | `The-Replacement` |
-| Project ID (GraphQL) | `PVT_kwDOE1iio84BrhYz` |
+| Project number | `{{ board_number }}` |
+| Owner | `{{ board_owner }}` |
+| Project ID (GraphQL) | `{{ board_project_id }}` |
 
 ## Field IDs
 
-### Status field
+| Field | Field ID |
+|-------|----------|
+| Status | `{{ board_status_field_id }}` |
+| SDD Phase | `{{ board_phase_field_id }}` |
 
-| Field ID | Type |
-|----------|------|
-| `PVTSSF_lADOE1iio84BrhYzzhpzwA4` | SingleSelect |
+### Status options
 
 | Option | ID |
 |--------|-----|
-| Todo | `f75ad846` |
-| In Progress | `47fc9ee4` |
-| Done | `98236657` |
+{% for name, id in board_status_options.items() -%}
+| {{ name | title }} | `{{ id }}` |
+{% endfor %}
+### SDD Phase options
 
-### SDD Phase field
+| Option | ID |
+|--------|-----|
+{% for name, id in board_phase_options.items() -%}
+| {{ name | title }} | `{{ id }}` |
+{% endfor %}
+## The only writer: `n3rv board sync`
 
-| Field ID | Type |
-|----------|------|
-| `PVTSSF_lADOE1iio84BrhYzzhpzwK4` | SingleSelect |
+One command replaces every GraphQL snippet and every pair of `gh project
+item-edit` calls:
 
-| Option | ID | SDD Phase |
-|--------|-----|-----------|
-| Todo | `66fa4f7d` | No SDD work started |
-| Explore | `751f2d04` | Phase 1 |
-| Propose | `33e3a016` | Phase 2 |
-| Spec | `ceb6e6d2` | Phase 3 |
-| Design | `c0dcb7b5` | Phase 4 |
-| Tasks | `d2705ad5` | Phase 5 |
-| Apply | `704d0a09` | Phase 6 |
-| Verify | `ca959d10` | Phase 7 |
-| Done | `f94cb7b6` | Phase 8 (archived) |
+```bash
+n3rv board sync --issue <ISSUE_NUMBER> --phase <PHASE>
+```
 
-## SDD Phase → Board Update Map
+- `--repo owner/repo` is optional: the command reads `origin` when run inside
+  the repository.
+- `--phase` is one of: `todo`, `explore`, `propose`, `spec`, `design`,
+  `tasks`, `apply`, `verify`, `archive`.
+- `--dry-run` resolves and reports without writing.
+- It pages through **every** project item, asserts **exactly one** match,
+  updates Status and SDD Phase together, and is idempotent.
+- It prints a JSON result on stdout. Exit codes: `0` success, `1` tool/GraphQL
+  failure, `2` ambiguous item, `3` issue absent from the project, `4` invalid
+  input.
 
-When an SDD phase completes, update the board as follows:
+## Phase map
 
-| SDD Phase Completes | Status | SDD Phase |
+| SDD phase completes | Status | SDD Phase |
 |---------------------|--------|-----------|
-| explore | In Progress (`47fc9ee4`) | Explore (`751f2d04`) |
-| propose | In Progress (`47fc9ee4`) | Propose (`33e3a016`) |
-| spec | In Progress (`47fc9ee4`) | Spec (`ceb6e6d2`) |
-| design | In Progress (`47fc9ee4`) | Design (`c0dcb7b5`) |
-| tasks | In Progress (`47fc9ee4`) | Tasks (`d2705ad5`) |
-| apply | In Progress (`47fc9ee4`) | Apply (`704d0a09`) |
-| verify | In Progress (`47fc9ee4`) | Verify (`ca959d10`) |
-| archive | Done (`98236657`) | Done (`f94cb7b6`) |
-
-## Commands
-
-### Update an item's Status
+{% for phase, options in board_phase_transitions.items() -%}
+| {{ phase }} | `{{ options.status }}` | `{{ options.phase }}` |
+{% endfor %}
+## Adding an issue to the board
 
 ```bash
-gh project item-edit \
-  --id <ITEM_ID> \
-  --field-id PVTSSF_lADOE1iio84BrhYzzhpzwA4 \
-  --project-id PVT_kwDOE1iio84BrhYz \
-  --single-select-option-id <OPTION_ID>
+gh project item-add {{ board_number }} --owner {{ board_owner }} --url <ISSUE_URL>
 ```
 
-### Update an item's SDD Phase
+After adding, run `n3rv board sync --issue <N> --phase todo` to set the
+initial state.
 
-```bash
-gh project item-edit \
-  --id <ITEM_ID> \
-  --field-id PVTSSF_lADOE1iio84BrhYzzhpzwK4 \
-  --project-id PVT_kwDOE1iio84BrhYz \
-  --single-select-option-id <PHASE_OPTION_ID>
-```
+## Workflow: after an SDD phase completes
 
-### Add an issue to the project board
+After `memory_save` succeeds in any SDD phase skill:
 
-```bash
-gh project item-add 1 --owner The-Replacement --url <ISSUE_URL>
-```
-
-### Find an item ID from an issue number
-
-```bash
-gh api graphql -f query='query{organization(login:"The-Replacement"){projectV2(number:1){items(first:100){nodes{id content{...on Issue{number}}}}}}}' --jq '.data.organization.projectV2.items.nodes[] | select(.content.number == <ISSUE_NUMBER>) | .id'
-```
-
-Replace `<ISSUE_NUMBER>` with the actual issue number.
-
-## Workflow: After SDD Phase Completion
-
-After `memory_save` succeeds in any SDD phase skill, update the board:
-
-1. Find the item ID for the issue
-2. Update both Status and SDD Phase fields
-3. Skip silently if the issue is not on the board
+1. Run `n3rv board sync --issue <N> --phase <phase>`.
+2. If it exits `3`, the issue is not on the board: add it with
+   `gh project item-add` and rerun. Report the failure — do not swallow it.
+3. If it exits `2`, the board has duplicate items for that issue: stop and
+   report both item ids.
 
 ## Rules
 
 - NEVER update the board before the memory_save succeeds. The board is downstream of MAGI.
-- If `ITEM_ID` is empty (issue not on board), skip the update — do NOT fail the task.
-- Always update both Status AND SDD Phase together for consistency.
-- All commands use `--owner The-Replacement`, never `--org`.
+- Always update Status AND SDD Phase together — `n3rv board sync` does this in one mutation.
+- Never skip an absent item silently; exit code `3` is a finding to report.
+- All commands use `--owner {{ board_owner }}`, never `--org`.

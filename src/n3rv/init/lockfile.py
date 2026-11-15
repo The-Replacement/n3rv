@@ -26,6 +26,10 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def lockfile_path(root: Path) -> Path:
     """Return the path to the template lockfile for *root*."""
     return root / ".n3rv" / LOCKFILE_NAME
@@ -46,8 +50,8 @@ def load_lockfile(root: Path) -> dict[str, Any]:
         return {}
 
 
-def save_lockfile(root: Path, entries: dict[str, Any]) -> None:
-    """Save lockfile entries to disk."""
+def save_lockfile(root: Path, entries: dict[str, Any], managed: dict[str, Any] | None = None) -> None:
+    """Save lockfile entries to disk, preserving managed state unless replaced."""
     path = lockfile_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
@@ -55,24 +59,52 @@ def save_lockfile(root: Path, entries: dict[str, Any]) -> None:
         "schema_version": "1.0",
         "entries": entries,
     }
+    managed_state = managed if managed is not None else load_managed_state(root)
+    if managed_state:
+        data["managed"] = managed_state
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
 
+def load_managed_state(root: Path) -> dict[str, Any]:
+    """Return what the generator itself owns (e.g. the MCP servers it added)."""
+    state = load_lockfile(root).get("managed")
+    return state if isinstance(state, dict) else {}
+
+
+def save_managed_state(root: Path, state: dict[str, Any]) -> None:
+    """Persist generator-managed state next to the lockfile entries."""
+    lock = load_lockfile(root)
+    save_lockfile(root, lock.get("entries", {}), managed=state)
+
+
 def record_entry(
     output_path: Path,
     template_name: str,
     context_hash: str = "",
+    *,
+    template_path: Path | None = None,
+    managed_region: str | None = None,
 ) -> dict[str, Any]:
-    """Build a lockfile entry for a newly rendered file."""
-    return {
-        "sha256": _sha256(output_path),
+    """Build a lockfile entry for a newly rendered file.
+
+    ``managed_region`` is the part of the output the generator owns (the marker
+    block for AGENTS.md, the whole file otherwise). ``template_path`` records
+    the revision the output came from so ``n3rv doctor`` can spot staleness.
+    """
+    whole = _sha256(output_path)
+    entry: dict[str, Any] = {
+        "sha256": whole,
+        "managed_sha256": _sha256_text(managed_region) if managed_region is not None else whole,
         "template": template_name,
         "context_hash": context_hash,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+    if template_path is not None and template_path.is_file():
+        entry["template_sha256"] = _sha256(template_path)
+    return entry
 
 
 def check_drift(root: Path, output_rel: str, current_hash: str) -> str | None:

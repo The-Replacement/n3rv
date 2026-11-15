@@ -154,11 +154,20 @@ def doctor_command(
         "--global-config",
         help="Global opencode config used to compare MCP inventories",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Fail when a check cannot be verified instead of skipping it",
+    ),
 ) -> None:
     """Run read-only convergence diagnostics.
 
     Exit code 0 means clean. Failing categories OR their bits together:
     drift=2, models=4, mcp=8, convergence=16, hooks=32.
+
+    A skipped check — no git remote, no GitHub access, no generated tree — is
+    reported as ``skip`` and does not fail the run. With ``--strict`` every
+    skip becomes a failure, so "could not verify" is never mistaken for clean.
     """
     raise typer.Exit(
         code=run_doctor(
@@ -167,6 +176,7 @@ def doctor_command(
             mainframe_remote=mainframe_remote,
             global_config=global_config,
             json_output=json_output,
+            strict=strict,
         )
     )
 

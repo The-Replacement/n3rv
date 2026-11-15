@@ -406,6 +406,62 @@ def test_run_doctor_clean_tree_exits_zero(tmp_path: Path, capsys):
     assert json.loads(capsys.readouterr().out)["ok"] is True
 
 
+def test_run_doctor_strict_fails_when_mainframe_is_unverified(tmp_path: Path, capsys):
+    """A missing mainframe remote must not look clean when strict is requested."""
+    root = _git_root(tmp_path)
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    catalog = _catalog_with(*(data["phase_model"] for data in SDD_PHASE_MAP.values()))
+    runner = FakeRunner(
+        [
+            (("git", "rev-parse", "HEAD"), CommandResult(0, "aaa\n")),
+            (("git", "rev-parse", "--abbrev-ref", "HEAD"), CommandResult(0, "main\n")),
+            (("git", "remote", "get-url", "origin"), CommandResult(0, "https://github.com/o/r.git\n")),
+            (("gh", "api", "repos/o/r", "--jq"), CommandResult(0, "main\n")),
+            (("gh", "api", "repos/o/r/commits/main", "--jq"), CommandResult(0, "aaa\n")),
+            (("git", "remote", "get-url", "mainframe"), CommandResult(1, "", "")),
+            (("opencode", "models"), catalog),
+            (("opencode", "mcp", "list"), CommandResult(0, "")),
+        ]
+    )
+
+    exit_code = doctor.run_doctor(
+        root,
+        templates_dir=templates,
+        global_config=tmp_path / "missing.json",
+        runner=runner,
+        json_output=True,
+        strict=True,
+    )
+
+    assert exit_code & doctor.CATEGORY_CODES["drift"]
+    drift = json.loads(capsys.readouterr().out)["categories"]["drift"]
+    assert drift["ok"] is False
+    unverified = [finding for finding in drift["findings"] if finding["level"] == "fail"]
+    assert any("no mainframe remote configured" in finding["message"] for finding in unverified)
+
+
+def test_run_doctor_strict_leaves_verified_checks_alone(tmp_path: Path, capsys):
+    """Strict mode only rewrites skips; an all-verified drift category still passes."""
+    root = _git_root(tmp_path)
+    runner = FakeRunner(
+        [
+            (("git", "rev-parse", "HEAD"), CommandResult(0, "aaa\n")),
+            (("git", "rev-parse", "--abbrev-ref", "HEAD"), CommandResult(0, "main\n")),
+            (("git", "remote", "get-url", "origin"), CommandResult(0, "https://github.com/o/r.git\n")),
+            (("gh", "api", "repos/o/r", "--jq"), CommandResult(0, "main\n")),
+            (("gh", "api", "repos/o/r/commits/main", "--jq"), CommandResult(0, "aaa\n")),
+            (("git", "remote", "get-url", "mainframe"), CommandResult(0, "ssh://box/repo\n")),
+            (("git", "ls-remote", "--exit-code", "mainframe", "HEAD"), CommandResult(0, "aaa\tHEAD\n")),
+        ]
+    )
+
+    result = doctor.check_drift(root, runner).strict()
+
+    assert not result.failed
+    assert all(finding.level != "skip" for finding in result.findings)
+
+
 def test_mcp_ignores_pending_connection_state(tmp_path: Path):
     """`pending` means the CLI has not finished checking, not that a server is down."""
     _write_config(tmp_path / "opencode.json", {"github": {"type": "local", "command": ["/usr/bin/gh-mcp"]}})

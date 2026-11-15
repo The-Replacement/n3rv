@@ -22,6 +22,45 @@ _STRUCTURE_DIRS: dict[str, str] = {
 _WEB_EXTENSIONS: frozenset[str] = frozenset({".html", ".htm", ".css", ".js", ".mjs", ".cjs"})
 _WEB_DIRS: frozenset[str] = frozenset({"css", "js", "assets", "public", "static"})
 
+#: Cap the recursive scan so a vendored tree cannot turn detection into a full
+#: filesystem walk.
+_WEB_SCAN_LIMIT = 5000
+
+
+def has_web_tree(root: Path) -> bool:
+    """Return True when the repository ships a web frontend.
+
+    Two layouts count: web assets at the repository root, or web assets inside
+    a ``web/`` tree. The second is what a static frontend looks like in a
+    multi-language repository (``radio`` keeps ``index.html`` and ``js/`` under
+    ``web/``), and it is invisible to a top-level-only scan.
+
+    Directory *names* like ``css/`` are deliberately not consulted here: this
+    helper answers "is there content?", not "is there a conventionally named
+    directory?". An empty ``web/`` is not a frontend.
+    """
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return False
+    if any(entry.is_file() and entry.suffix.lower() in _WEB_EXTENSIONS for entry in entries):
+        return True
+    return _contains_web_files(root / "web")
+
+
+def _contains_web_files(directory: Path) -> bool:
+    if not directory.is_dir():
+        return False
+    try:
+        for index, path in enumerate(directory.rglob("*")):
+            if index >= _WEB_SCAN_LIMIT:
+                return False
+            if path.is_file() and path.suffix.lower() in _WEB_EXTENSIONS:
+                return True
+    except OSError:
+        return False
+    return False
+
 
 class StructureDetector:
     """Detect project directory structure."""
@@ -31,7 +70,7 @@ class StructureDetector:
         has_tests_dir = False
         has_docs_dir = False
         has_scripts_dir = False
-        has_web_files = False
+        has_web_files = has_web_tree(root)
         key_dirs: list[str] = []
 
         try:
@@ -40,8 +79,7 @@ class StructureDetector:
             return StructureInfo()
 
         for entry in entries:
-            if entry.is_file() and entry.suffix.lower() in _WEB_EXTENSIONS:
-                has_web_files = True
+            if entry.is_file():
                 continue
 
             if not entry.is_dir():

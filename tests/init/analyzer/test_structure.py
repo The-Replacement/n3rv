@@ -126,3 +126,20 @@ n3rv-gui = "n3rv.gui:main"
         (tmp_path / "src").mkdir()
         result = StructureDetector().detect(tmp_path, Stack.PYTHON)
         assert result.has_web_files is False
+
+    def test_web_tree_detected_when_root_has_no_web_files(self, tmp_path: Path) -> None:
+        """A frontend under web/ is a frontend even with nothing at the root."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "web" / "js").mkdir(parents=True)
+        (tmp_path / "web" / "index.html").write_text("<html></html>")
+        (tmp_path / "web" / "js" / "audio.js").write_text("console.log('hi')")
+
+        result = StructureDetector().detect(tmp_path, Stack.GENERIC)
+        assert result.has_web_files is True
+
+    def test_empty_web_tree_is_not_a_frontend(self, tmp_path: Path) -> None:
+        (tmp_path / "src").mkdir()
+        (tmp_path / "web").mkdir()
+
+        result = StructureDetector().detect(tmp_path, Stack.GENERIC)
+        assert result.has_web_files is False

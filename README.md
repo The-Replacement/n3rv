@@ -192,8 +192,8 @@ src/n3rv/
 │   ├── exec/         # registry (20+ langs), store, watcher, service
 │   └── vector_store, relation_store, session_manager, conflict_store
 └── init/             # init, update, renderer, detector, context, registry, lockfile
-    └── templates/    # opencode.json, AGENTS.md, skills(18), agents(7), commands(8), plugins, hooks
-docs/                 # ARCHITECTURE, DEPLOYMENT, MCP-TOOLS, SDD-WORKFLOW, index.html (n3rv.daza.ar)
+    └── templates/    # opencode.json, AGENTS.md, skills(18), agents(13), commands(6), plugins, hooks
+docs/                 # ARCHITECTURE, DEPLOYMENT, HARNESS-SCOPE, MCP-TOOLS, RECONCILE, SDD-WORKFLOW
 tests/                # pytest — a2a, cli, init, mcp, org, providers, tools, limits, config
 ```
 
@@ -215,6 +215,7 @@ CI (`.github/workflows/ci.yml`): `Lint & Format` + `Test 3.11/3.12/3.13` — 4 r
 |-----|---------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System overview, 4 MCP servers, Evangelion map, data flows, dispatch (native subagents vs hub) |
 | [docs/RECONCILE.md](docs/RECONCILE.md) | `.n3rv/state.yaml`, `plan`/`apply`/`doctor`, exit bits, conflicts, inertness, migration recipe |
+| [docs/HARNESS-SCOPE.md](docs/HARNESS-SCOPE.md) | Which repositories get a generated tree, shared vs repo-specific components, the gate contract |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Install, `init`/`daemon`/`org`/`code-graph`, env vars, multi-agent machine, troubleshooting |
 | [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md) | All 31 tools — memory (12) + hub (5) + exec (8) + code-graph (6) |
 | [docs/SDD-WORKFLOW.md](docs/SDD-WORKFLOW.md) | 8 phases, memory keys, converge, Spec-Kit, `change_id` convention |

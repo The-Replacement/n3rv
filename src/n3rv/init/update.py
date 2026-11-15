@@ -733,6 +733,18 @@ def _handle_marker_merge(
         return UpdateResult(entry.output_path, entry.strategy, "SKIPPED", warning="No markers found")
 
 
+def _write_rendered(target: Path, text: str) -> None:
+    """Write already-resolved content through the single writer.
+
+    Every strategy decides *what* to write; this decides *how*. Routing all of
+    them through ``write_file`` means there is exactly one place that creates
+    parent directories, writes bytes and applies the executable bit - which is
+    the precondition for the reconciler writing through the same path instead
+    of growing a second implementation.
+    """
+    write_file(target, text, force=True)
+
+
 def _reconcile_mcp_servers(merged: dict[str, Any], root: Path, recommended: set[str]) -> list[str]:
     """Prune generator-managed servers, preserve user-added ones, migrate V1 layout."""
     mcp = merged.get("mcp")
@@ -792,8 +804,7 @@ def _handle_json_merge(
                 _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
             )
             if not dry_run:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
+                _write_rendered(target, json.dumps(merged, indent=4) + "\n")
             return UpdateResult(
                 entry.output_path,
                 entry.strategy,
@@ -815,7 +826,7 @@ def _handle_json_merge(
         changes = _reconcile_mcp_servers(merged, root, recommended_mcp or set()) if recommended_mcp is not None else []
 
         if not dry_run:
-            target.write_text(json.dumps(merged, indent=4) + "\n", encoding="utf-8")
+            _write_rendered(target, json.dumps(merged, indent=4) + "\n")
 
         return UpdateResult(
             entry.output_path,

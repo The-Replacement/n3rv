@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from n3rv.a2a.hub import main as hub_main
+from n3rv.cli_board import board_app
 from n3rv.cli_code_graph import code_graph_app
 from n3rv.cli_memory import memory_app, memory_list, memory_search
 from n3rv.cli_org import org_app
@@ -16,6 +17,7 @@ from n3rv.daemon import (
     daemon_status,
     daemon_stop,
 )
+from n3rv.doctor import run_doctor
 from n3rv.init import run_init
 
 app = typer.Typer(name="n3rv", help="Invisible engineering infrastructure for opencode agents")
@@ -27,6 +29,7 @@ app.add_typer(daemon_app, name="daemon")
 app.add_typer(memory_app, name="memory")
 app.add_typer(org_app, name="org")
 app.add_typer(code_graph_app, name="code-graph")
+app.add_typer(board_app, name="board")
 
 
 @hub_app.command("start")
@@ -107,10 +110,17 @@ def update_command(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
     diff: bool = typer.Option(False, "--diff", help="Show unified diff of changes (implies --dry-run)"),
     force_commands: bool = typer.Option(False, "--force-commands", help="Overwrite command files"),
+    force_project_files: bool = typer.Option(
+        False,
+        "--force-project-files",
+        help="Overwrite project-owned files (AGENTS.md marker block, .githooks/pre-push) even when modified",
+    ),
     only: str | None = typer.Option(
         None,
         "--only",
-        help="Only update one category: marker-merge, json-merge, overwrite, skip-default",
+        help=(
+            "Only update one category: marker-merge, json-merge, overwrite, skip-default, create-if-missing, generated"
+        ),
     ),
     root: Path = typer.Option(Path.cwd(), "--root", help="Project root directory"),
 ) -> None:
@@ -124,6 +134,39 @@ def update_command(
             show_diff=diff,
             force_commands=force_commands,
             only=only,
+            force_project_files=force_project_files,
+        )
+    )
+
+
+@app.command("doctor")
+def doctor_command(
+    root: Path = typer.Option(Path.cwd(), "--root", help="Project root directory"),
+    json_output: bool = typer.Option(False, "--json", help="Emit a machine-readable report"),
+    repo: str | None = typer.Option(None, "--repo", help="Upstream repository as owner/repo"),
+    mainframe_remote: str = typer.Option(
+        "mainframe",
+        "--mainframe-remote",
+        help="Git remote that represents the mainframe checkout",
+    ),
+    global_config: Path | None = typer.Option(
+        None,
+        "--global-config",
+        help="Global opencode config used to compare MCP inventories",
+    ),
+) -> None:
+    """Run read-only convergence diagnostics.
+
+    Exit code 0 means clean. Failing categories OR their bits together:
+    drift=2, models=4, mcp=8, convergence=16, hooks=32.
+    """
+    raise typer.Exit(
+        code=run_doctor(
+            root,
+            repo=repo,
+            mainframe_remote=mainframe_remote,
+            global_config=global_config,
+            json_output=json_output,
         )
     )
 

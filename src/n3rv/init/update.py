@@ -803,9 +803,7 @@ def _resolve_json_merge(
     else:
         merged = template_data
 
-    changes = (
-        tuple(_reconcile_mcp_servers(merged, root, recommended_mcp)) if recommended_mcp is not None else ()
-    )
+    changes = tuple(_reconcile_mcp_servers(merged, root, recommended_mcp)) if recommended_mcp is not None else ()
     return Resolution(json.dumps(merged, indent=4) + "\n", notes=changes)
 
 

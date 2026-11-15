@@ -308,9 +308,7 @@ def _server_state(name: str, value: Any) -> McpServerState:
         type=str(data.get("type") or "local"),
         command=[str(part) for part in command] if isinstance(command, list) else None,
         url=data.get("url") if isinstance(data.get("url"), str) else None,
-        environment={str(k): str(v) for k, v in environment.items()}
-        if isinstance(environment, dict)
-        else None,
+        environment={str(k): str(v) for k, v in environment.items()} if isinstance(environment, dict) else None,
         description=str(data.get("description") or ""),
         disabled=bool(data.get("disabled") or data.get("enabled") is False),
     )

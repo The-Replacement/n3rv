@@ -119,9 +119,7 @@ class TestDrift:
         agents = root / "AGENTS.md"
         text = agents.read_text(encoding="utf-8")
         marker_line_end = text.find("\n", text.find(MARKER_START))
-        agents.write_text(
-            text[: marker_line_end + 1] + "hand edit\n" + text[marker_line_end + 1 :], encoding="utf-8"
-        )
+        agents.write_text(text[: marker_line_end + 1] + "hand edit\n" + text[marker_line_end + 1 :], encoding="utf-8")
 
         plan = build_plan(
             root,

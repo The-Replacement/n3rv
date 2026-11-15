@@ -200,9 +200,7 @@ class TestDetectionIsPinned:
         assert "web" in structure.key_dirs
 
     def test_frameworks_and_tools_are_present_in_the_state(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\ndependencies = ["fastapi>=0.100"]\n'
-        )
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\ndependencies = ["fastapi>=0.100"]\n')
 
         detection = state_from_tree(tmp_path).detection
 

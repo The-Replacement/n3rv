@@ -46,9 +46,7 @@ class TestPlan:
     def test_json_is_parseable_and_reports_the_hash(self, tmp_path: Path) -> None:
         root = _converged(tmp_path)
 
-        result = runner.invoke(
-            app, ["plan", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))]
-        )
+        result = runner.invoke(app, ["plan", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))])
 
         payload = json.loads(result.stdout)
         assert payload["empty"] is True
@@ -59,9 +57,7 @@ class TestPlan:
         root = _converged(tmp_path)
         (root / ".opencode/agents/n3rv.md").write_text("wrecked\n")
 
-        result = runner.invoke(
-            app, ["plan", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))]
-        )
+        result = runner.invoke(app, ["plan", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))])
 
         payload = json.loads(result.stdout)
         assert payload["exit_code"] & PLAN_CODES["drift"]
@@ -82,24 +78,18 @@ class TestApply:
         target = root / ".opencode/agents/n3rv.md"
         target.write_text("wrecked\n")
 
-        result = runner.invoke(
-            app, ["apply", "--root", str(root), "--global-config", str(_policy(tmp_path))]
-        )
+        result = runner.invoke(app, ["apply", "--root", str(root), "--global-config", str(_policy(tmp_path))])
 
         assert result.exit_code == 0
         assert target.read_text() != "wrecked\n"
-        follow_up = runner.invoke(
-            app, ["plan", "--root", str(root), "--global-config", str(_policy(tmp_path))]
-        )
+        follow_up = runner.invoke(app, ["plan", "--root", str(root), "--global-config", str(_policy(tmp_path))])
         assert follow_up.exit_code == 0
 
     def test_apply_json_reports_applied_targets(self, tmp_path: Path) -> None:
         root = _converged(tmp_path)
         (root / ".opencode/agents/n3rv.md").write_text("wrecked\n")
 
-        result = runner.invoke(
-            app, ["apply", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))]
-        )
+        result = runner.invoke(app, ["apply", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))])
 
         payload = json.loads(result.stdout)
         assert payload["ok"] is True

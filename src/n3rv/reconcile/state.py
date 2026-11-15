@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
@@ -52,10 +53,73 @@ class Components(BaseModel):
     hooks: list[str] = Field(default_factory=list)
 
 
+class McpServerState(BaseModel):
+    """A full server specification.
+
+    Specs are pinned, not resolved by name from a catalog: a catalog bump must
+    show up as divergence, never as a silent rewrite of a repository's config.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    type: str = "local"
+    command: list[str] | None = None
+    url: str | None = None
+    environment: dict[str, str] | None = None
+    description: str = ""
+    disabled: bool = False
+
+
 class McpState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    servers: list[str] = Field(default_factory=list)
+    servers: list[McpServerState] = Field(default_factory=list)
+
+
+class StructureState(BaseModel):
+    """Detected layout, pinned. Templates interpolate these into file bodies."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    has_src_dir: bool = False
+    has_tests_dir: bool = False
+    has_docs_dir: bool = False
+    has_scripts_dir: bool = False
+    has_web_files: bool = False
+    entry_points: list[str] = Field(default_factory=list)
+    key_dirs: list[str] = Field(default_factory=list)
+
+
+class FrameworkState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    category: str = ""
+    guidance: str = ""
+    version_hint: str | None = None
+
+
+class ToolState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    command: str
+    category: str = ""
+
+
+class Detection(BaseModel):
+    """What the analyzers decided when this state was written.
+
+    Pinned rather than re-detected at render time, so the same state produces
+    the same bytes regardless of which branch is checked out.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    structure: StructureState = Field(default_factory=StructureState)
+    frameworks: list[FrameworkState] = Field(default_factory=list)
+    tools: list[ToolState] = Field(default_factory=list)
 
 
 class BoardTarget(BaseModel):
@@ -73,6 +137,7 @@ class ProjectState(BaseModel):
     schema_version: Literal[1] = Field(default=SCHEMA_VERSION, alias="schema")
     project: ProjectIdentity
     components: Components = Field(default_factory=Components)
+    detection: Detection = Field(default_factory=Detection)
     mcp: McpState = Field(default_factory=McpState)
     board: BoardTarget | None = None
 
@@ -156,8 +221,8 @@ def state_from_tree(root: Path) -> ProjectState:
 
     Components are the manifest entries actually present on disk - not what
     detection would offer, and not files someone installed by hand (those are
-    user-owned, not ours to declare). MCP servers come from the project's
-    opencode.json, falling back to detection when there is no config yet.
+    user-owned, not ours to declare). Detection and MCP specs are pinned from
+    the analyzers, because templates interpolate them into file bodies.
     """
     stack_info = detect_stack(root)
     grouped = manifest_components()
@@ -169,32 +234,45 @@ def state_from_tree(root: Path) -> ProjectState:
         hooks=sorted(name for name, out in grouped["hooks"].items() if (root / out).is_file()),
     )
 
+    profile = _profile(root, stack_info)
+    served = _servers_from_config(_read_project_config(root))
+
     return ProjectState(
         project=ProjectIdentity(name=stack_info.project_name, stack=stack_info.stack),
         components=components,
-        mcp=McpState(servers=_servers_from_tree(root)),
+        detection=Detection(
+            structure=StructureState(
+                has_src_dir=profile.structure.has_src_dir,
+                has_tests_dir=profile.structure.has_tests_dir,
+                has_docs_dir=profile.structure.has_docs_dir,
+                has_scripts_dir=profile.structure.has_scripts_dir,
+                has_web_files=profile.structure.has_web_files,
+                entry_points=list(profile.structure.entry_points),
+                key_dirs=list(profile.structure.key_dirs),
+            ),
+            frameworks=[FrameworkState(**asdict(fw)) for fw in profile.frameworks],
+            tools=[ToolState(**asdict(tool)) for tool in profile.tools],
+        ),
+        mcp=McpState(servers=served if served is not None else _servers_from_profile(profile)),
     )
 
 
-def _servers_from_tree(root: Path) -> list[str]:
+def _read_project_config(root: Path) -> Any:
     config = root / "opencode.json"
-    if config.is_file():
-        try:
-            data = json.loads(config.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = None
-        servers = _servers_from_config(data)
-        if servers is not None:
-            return servers
-    return _servers_from_detection(root)
+    if not config.is_file():
+        return None
+    try:
+        return json.loads(config.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
 
 
-def _servers_from_config(data: Any) -> list[str] | None:
+def _servers_from_config(data: Any) -> list[McpServerState] | None:
     """Servers a project config actually declares, in either layout.
 
     V2 keeps them under ``mcp.servers``; V1 kept server definitions directly
     under ``mcp``. ``None`` means the config says nothing, which is different
-    from declaring an empty set - only then does detection get a vote.
+    from declaring an empty set - only then does the catalog get a vote.
     """
     if not isinstance(data, dict):
         return None
@@ -203,29 +281,89 @@ def _servers_from_config(data: Any) -> list[str] | None:
         return None
     servers = mcp.get("servers")
     if isinstance(servers, dict):
-        return sorted(servers)
-    v1_servers = {
-        name: value
-        for name, value in mcp.items()
-        if name not in {"servers", "timeout"} and isinstance(value, dict) and "type" in value
-    }
-    return sorted(v1_servers) if v1_servers else None
+        raw = servers
+    else:
+        raw = {
+            name: value
+            for name, value in mcp.items()
+            if name not in {"servers", "timeout"} and isinstance(value, dict) and "type" in value
+        }
+    if not raw:
+        return None if not isinstance(mcp.get("servers"), dict) else []
+    return [_server_state(name, value) for name, value in sorted(raw.items())]
 
 
-def _servers_from_detection(root: Path) -> list[str]:
+def _server_state(name: str, value: Any) -> McpServerState:
+    data = dict(value) if isinstance(value, dict) else {}
+    command = data.get("command")
+    environment = data.get("environment")
+    return McpServerState(
+        name=name,
+        type=str(data.get("type") or "local"),
+        command=[str(part) for part in command] if isinstance(command, list) else None,
+        url=data.get("url") if isinstance(data.get("url"), str) else None,
+        environment={str(k): str(v) for k, v in environment.items()}
+        if isinstance(environment, dict)
+        else None,
+        description=str(data.get("description") or ""),
+        disabled=bool(data.get("disabled") or data.get("enabled") is False),
+    )
+
+
+def _servers_from_profile(profile: Any) -> list[McpServerState]:
+    return [
+        McpServerState(
+            name=server.name,
+            type=server.type,
+            command=list(server.command) if server.command else None,
+            url=server.url,
+            environment=dict(server.environment) if server.environment else None,
+            description=server.description,
+            disabled=server.disabled,
+        )
+        for server in profile.mcp_servers
+    ]
+
+
+def _profile(root: Path, stack_info: Any) -> Any:
     from n3rv.init.analyzer import analyze_project
     from n3rv.init.context import ProjectContext
 
-    stack_info = detect_stack(root)
-    try:
-        context = ProjectContext.build(
-            project_name=stack_info.project_name,
-            stack=stack_info.stack,
-            project_root=root,
-        )
-    except Exception:  # pragma: no cover - detection must not block state creation
-        return []
-    return sorted(server.name for server in analyze_project(root, context).mcp_servers)
+    context = ProjectContext.build(
+        project_name=stack_info.project_name,
+        stack=stack_info.stack,
+        project_root=root,
+    )
+    return analyze_project(root, context)
+
+
+def render_context(state: ProjectState, *, project_root: Path, n3rv_binary: str, n3rv_version: str) -> dict[str, Any]:
+    """Jinja context built from the declared state instead of live detection.
+
+    Only two inputs are environment-derived: ``project_root`` and
+    ``n3rv_binary``. They are rendered (some outputs embed absolute paths) but
+    never enter a plan's identity - see plan_hash/env_hash.
+    """
+    from n3rv.board import render_context as board_context
+
+    return {
+        "project_name": state.project.name,
+        "stack": state.project.stack.value,
+        "project_root": str(project_root),
+        "n3rv_version": n3rv_version,
+        # Templates do not render a timestamp; it is provided empty so it can
+        # never leak non-determinism into output.
+        "timestamp": "",
+        "n3rv_binary": n3rv_binary,
+        "profile_structure": state.detection.structure.model_dump(),
+        "profile_frameworks": [fw.model_dump() for fw in state.detection.frameworks],
+        "profile_has_frameworks": bool(state.detection.frameworks),
+        "profile_tools": [tool.model_dump() for tool in state.detection.tools],
+        "profile_has_tools": bool(state.detection.tools),
+        "profile_mcp_servers": [server.model_dump() for server in state.mcp.servers],
+        "profile_has_mcp_servers": bool(state.mcp.servers),
+        **board_context(),
+    }
 
 
 def state_summary(state: ProjectState) -> dict[str, Any]:
@@ -241,5 +379,9 @@ def state_summary(state: ProjectState) -> dict[str, Any]:
             "commands": len(state.components.commands),
             "hooks": len(state.components.hooks),
         },
-        "mcp_servers": list(state.mcp.servers),
+        "detection": {
+            "frameworks": len(state.detection.frameworks),
+            "tools": len(state.detection.tools),
+        },
+        "mcp_servers": [server.name for server in state.mcp.servers],
     }

@@ -65,6 +65,7 @@ class ProjectProfile(BaseModel):
     tools: list[ToolCommand] = field(default_factory=list)
     structure: StructureInfo = field(default_factory=StructureInfo)
     mcp_servers: list[MCPServerInfo] = field(default_factory=list)
+    requires_python: str | None = None
 
     def to_j2_context(self) -> dict:
         """Flatten profile into Jinja2-compatible template context."""
@@ -110,6 +111,7 @@ class ProjectProfile(BaseModel):
                 for s in self.mcp_servers
             ],
             "profile_has_mcp_servers": len(self.mcp_servers) > 0,
+            "requires_python": self.requires_python,
         }
 
     def get_tool(self, name: str) -> ToolCommand | None:

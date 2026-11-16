@@ -6,7 +6,15 @@ from pathlib import Path
 
 import typer
 
-from n3rv.reconcile import StateError, load_state, save_state, state_from_tree, state_path, state_summary
+from n3rv.reconcile import (
+    SCHEMA_VERSION,
+    StateError,
+    load_state,
+    save_state,
+    state_from_tree,
+    state_path,
+    state_summary,
+)
 
 state_app = typer.Typer(help="Declare and inspect the desired state")
 
@@ -40,6 +48,23 @@ def state_init_cmd(
         f"{len(summary['mcp_servers'])} MCP servers"
     )
     typer.echo(f"  sha256 {summary['sha256'][:16]}")
+
+
+@state_app.command("migrate")
+def state_migrate_cmd(root: Path = typer.Option(Path.cwd(), "--root", help="Project root directory")) -> None:
+    """Rewrite .n3rv/state.yaml at schema 2 in place.
+
+    Pure load -> save: the new fields take their defaults and detection is
+    never re-run. Re-running it on a schema 2 file is a byte-identical no-op.
+    """
+    try:
+        state = load_state(root)
+        path = save_state(root, state, force=True)
+    except StateError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"✓ Migrated {path.relative_to(root)} to schema {SCHEMA_VERSION} (sha256 {state.sha256()[:16]})")
 
 
 @state_app.command("show")

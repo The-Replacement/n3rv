@@ -540,3 +540,42 @@ def test_drift_feature_branch_is_a_warning_not_a_failure(tmp_path: Path):
 
     assert not result.failed
     assert any(finding.level == "warn" and "feat/x" in finding.message for finding in result.findings)
+
+
+def test_run_doctor_strict_passes_when_deployment_target_is_none(tmp_path: Path, capsys):
+    """Declared deployment.target: none makes the mainframe leg a declared ok, not an unverified skip."""
+    root = _git_root(tmp_path)
+    (root / ".n3rv").mkdir()
+    (root / ".n3rv/state.yaml").write_text(
+        "schema: 2\nproject:\n  name: demo\n  stack: generic\ndeployment:\n  target: none\n"
+    )
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    catalog = _catalog_with(*(data["phase_model"] for data in SDD_PHASE_MAP.values()))
+    runner = FakeRunner(
+        [
+            (("git", "rev-parse", "HEAD"), CommandResult(0, "aaa\n")),
+            (("git", "rev-parse", "--abbrev-ref", "HEAD"), CommandResult(0, "main\n")),
+            (("git", "remote", "get-url", "origin"), CommandResult(0, "https://github.com/o/r.git\n")),
+            (("gh", "api", "repos/o/r", "--jq"), CommandResult(0, "main\n")),
+            (("gh", "api", "repos/o/r/commits/main", "--jq"), CommandResult(0, "aaa\n")),
+            (("git", "remote", "get-url", "mainframe"), CommandResult(1, "", "")),
+            (("opencode", "models"), catalog),
+            (("opencode", "mcp", "list"), CommandResult(0, "")),
+        ]
+    )
+
+    exit_code = doctor.run_doctor(
+        root,
+        templates_dir=templates,
+        global_config=tmp_path / "missing.json",
+        runner=runner,
+        json_output=True,
+        strict=True,
+    )
+
+    drift = json.loads(capsys.readouterr().out)["categories"]["drift"]
+    assert not (exit_code & doctor.CATEGORY_CODES["drift"])
+    messages = [finding["message"] for finding in drift["findings"]]
+    assert any("deployment.target is none" in m for m in messages)
+    assert not any(f["level"] == "fail" and "mainframe" in f["message"] for f in drift["findings"])

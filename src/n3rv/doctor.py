@@ -142,6 +142,7 @@ def check_drift(
     *,
     repo: str | None = None,
     mainframe_remote: str = "mainframe",
+    deployment_target: str = "mainframe",
 ) -> CategoryResult:
     """Workstation HEAD vs live GitHub default branch vs mainframe HEAD."""
     findings: list[Finding] = []
@@ -220,7 +221,11 @@ def check_drift(
                 )
 
     mainframe = _git(runner, root, "remote", "get-url", mainframe_remote)
-    if mainframe.returncode != 0:
+    if deployment_target == "none":
+        findings.append(_ok("deployment.target is none; mainframe leg skipped by declaration"))
+        if mainframe.returncode == 0:
+            findings.append(_warn(f"{mainframe_remote} remote is configured but deployment.target is none"))
+    elif mainframe.returncode != 0:
         findings.append(
             _skip(
                 f"no {mainframe_remote} remote configured",
@@ -615,8 +620,15 @@ def run_doctor(
     reach a remote or the GitHub API cannot pass by omission.
     """
     run = runner or default_runner
+    deployment_target = "mainframe"
+    try:
+        from n3rv.reconcile import load_state
+
+        deployment_target = load_state(root).deployment.target
+    except Exception:
+        deployment_target = "mainframe"
     categories = [
-        check_drift(root, run, repo=repo, mainframe_remote=mainframe_remote),
+        check_drift(root, run, repo=repo, mainframe_remote=mainframe_remote, deployment_target=deployment_target),
         check_models(root, run, templates_dir=templates_dir),
         check_mcp(root, run, global_config=global_config),
         check_convergence(root, templates_dir=templates_dir),

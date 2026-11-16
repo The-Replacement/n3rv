@@ -170,6 +170,21 @@ def _extract_from_pyproject(path: Path) -> str | None:
     return None
 
 
+def _extract_requires_python(path: Path) -> str | None:
+    """Return [project].requires-python from pyproject.toml, or None."""
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        project = data.get("project")
+        if isinstance(project, dict):
+            value = project.get("requires-python")
+            if isinstance(value, str):
+                return value
+    except Exception:
+        logger.debug("Failed to read requires-python from %s", path, exc_info=True)
+    return None
+
+
 def _extract_from_package_json(path: Path) -> str | None:
     try:
         with path.open("r", encoding="utf-8") as f:

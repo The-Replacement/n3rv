@@ -10,7 +10,15 @@ import pytest
 from n3rv.init import FILE_MANIFEST, family_for
 from n3rv.init.context import Stack
 from n3rv.reconcile import StateError, load_state, save_state, state_from_tree, state_path
-from n3rv.reconcile.state import BoardTarget, Components, McpState, ProjectIdentity, ProjectState
+from n3rv.reconcile.state import (
+    BoardTarget,
+    Components,
+    Deployment,
+    McpState,
+    ProjectIdentity,
+    ProjectState,
+    Tiers,
+)
 
 
 def _state(**overrides: object) -> ProjectState:
@@ -38,11 +46,11 @@ class TestSchema:
         loaded = load_state(tmp_path)
 
         assert loaded == state
-        assert loaded.schema_version == 1
+        assert loaded.schema_version == 2
 
     def test_serialized_yaml_uses_the_alias(self, tmp_path: Path) -> None:
         text = _state().to_yaml()
-        assert text.startswith("schema: 1")
+        assert text.startswith("schema: 2")
 
     def test_unknown_key_is_rejected(self, tmp_path: Path) -> None:
         _write_state(
@@ -54,9 +62,17 @@ class TestSchema:
             load_state(tmp_path)
 
     def test_unknown_schema_version_is_rejected(self, tmp_path: Path) -> None:
-        _write_state(tmp_path, "schema: 2\nproject:\n  name: radio\n  stack: generic\n")
-        with pytest.raises(StateError):
+        _write_state(tmp_path, "schema: 3\nproject:\n  name: radio\n  stack: generic\n")
+        with pytest.raises(StateError, match="schema 3"):
             load_state(tmp_path)
+
+    def test_missing_schema_field_is_treated_as_v1(self, tmp_path: Path) -> None:
+        """Pre-schema files stay loadable; the upgrade path fills the defaults."""
+        _write_state(tmp_path, "project:\n  name: radio\n  stack: generic\n")
+        state = load_state(tmp_path)
+        assert state.schema_version == 2
+        assert state.deployment.target == "mainframe"
+        assert state.tiers == Tiers()
 
     def test_missing_file_names_the_fix(self, tmp_path: Path) -> None:
         with pytest.raises(StateError, match="n3rv state init"):
@@ -255,3 +271,90 @@ class TestRenderContext:
     def test_mcp_specs_come_from_the_state_not_a_catalog(self, tmp_path: Path) -> None:
         ctx = self._ctx(tmp_path, _state())
         assert ctx["profile_mcp_servers"][0]["command"] == ["x"]
+
+
+class TestMigration:
+    def test_v1_state_loads_as_v2_with_defaults(self, tmp_path: Path) -> None:
+        """M1: v1 file upgrades in memory; pre-existing fields preserved, new fields defaulted."""
+        _write_state(
+            tmp_path,
+            "schema: 1\n"
+            "project:\n  name: radio\n  stack: generic\n"
+            "components:\n  agents: [git-ops]\n  skills: []\n  commands: []\n  hooks: []\n"
+            "mcp:\n  servers:\n    - name: st\n      type: local\n      command: [x]\n",
+        )
+        loaded = load_state(tmp_path)
+        assert loaded.schema_version == 2
+        assert loaded.project.name == "radio"
+        assert loaded.components.agents == ["git-ops"]
+        assert [s.name for s in loaded.mcp.servers] == ["st"]
+        assert loaded.detection.requires_python is None
+        assert loaded.deployment == Deployment()
+        assert loaded.deployment.target == "mainframe"
+        assert loaded.tiers == Tiers()
+        # on-disk file is NOT rewritten by load
+        assert "schema: 1" in state_path(tmp_path).read_text()
+
+    def test_migrate_verb_persists_v2_without_redetection(self, tmp_path: Path) -> None:
+        """M2: load -> save(force) rewrites schema on disk; detection preserved byte-for-byte."""
+        v1 = (
+            "schema: 1\n"
+            "project:\n  name: radio\n  stack: generic\n"
+            "components:\n  agents: [git-ops]\n  skills: []\n  commands: []\n  hooks: []\n"
+            "detection:\n"
+            "  structure:\n    has_src_dir: true\n    has_tests_dir: false\n"
+            "    has_docs_dir: false\n    has_scripts_dir: false\n    has_web_files: false\n"
+            "    entry_points: []\n    key_dirs: []\n"
+            "  frameworks: []\n  tools: []\n"
+            "mcp:\n  servers: []\n"
+        )
+        _write_state(tmp_path, v1)
+        before = load_state(tmp_path)
+        # simulate migrate
+        save_state(tmp_path, before, force=True)
+        after = load_state(tmp_path)
+        assert after.schema_version == 2
+        assert after.detection == before.detection
+        assert after.components == before.components
+        assert after.mcp == before.mcp
+        assert "schema: 2" in state_path(tmp_path).read_text()
+
+    def test_v1_load_canonical_preserves_detection_fields(self, tmp_path: Path) -> None:
+        """M2 property: detection preserved through upgrade; schema bumped to v2."""
+        _write_state(
+            tmp_path,
+            "schema: 1\nproject:\n  name: radio\n  stack: generic\ndetection:\n  structure:\n    has_src_dir: true\n",
+        )
+        loaded = load_state(tmp_path)
+        assert loaded.schema_version == 2
+        assert loaded.detection.structure.has_src_dir is True
+        assert loaded.detection.requires_python is None
+        v1 = ProjectState.model_validate(
+            {
+                "schema": 1,
+                "project": {"name": "radio", "stack": "generic"},
+                "detection": {"structure": {"has_src_dir": True}},
+            }
+        )
+        assert loaded.detection == v1.detection
+
+
+class TestRequiresPython:
+    def _ctx(self, tmp_path: Path, state: ProjectState, binary: str = "/usr/bin/n3rv") -> dict:
+        from n3rv.reconcile import render_context
+
+        return render_context(state, project_root=tmp_path, n3rv_binary=binary, n3rv_version="1.0.0")
+
+    def test_render_context_exposes_requires_python(self, tmp_path: Path) -> None:
+        state = _state(detection={"requires_python": ">=3.15"})
+        ctx = self._ctx(tmp_path, state)
+        assert ctx["requires_python"] == ">=3.15"
+
+    def test_render_context_requires_python_none_when_absent(self, tmp_path: Path) -> None:
+        ctx = self._ctx(tmp_path, _state())
+        assert ctx["requires_python"] is None
+
+    def test_state_from_tree_pins_requires_python(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nrequires-python = ">=3.15"\n')
+        state = state_from_tree(tmp_path)
+        assert state.detection.requires_python == ">=3.15"

@@ -60,7 +60,7 @@ def test_state_show_prints_yaml_and_hash(tmp_path: Path) -> None:
     result = runner.invoke(app, ["state", "show", "--root", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "schema: 1" in result.stdout
+    assert "schema: 2" in result.stdout
     assert "sha256 " in result.stdout
 
 
@@ -92,3 +92,20 @@ def test_state_init_accepts_a_relative_dot_root(tmp_path: Path, monkeypatch) -> 
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert load_state(repo).project.name == "infra"
+
+
+def test_state_migrate_rewrites_schema_v2(tmp_path: Path) -> None:
+    path = state_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "schema: 1\nproject:\n  name: radio\n  stack: generic\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["state", "migrate", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Migrated" in result.stdout
+    assert "schema 2" in result.stdout
+    assert "schema: 2" in path.read_text()
+    assert load_state(tmp_path).schema_version == 2

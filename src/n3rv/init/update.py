@@ -82,6 +82,7 @@ class UpdateResult:
     strategy: UpdateStrategy
     result: str
     warning: str | None = None
+    owned_keys: dict[str, list[str]] | None = None
 
 
 @dataclass
@@ -580,8 +581,18 @@ def run_update(
                 print("✓ Added n3rv patterns to .gitignore")
 
             save_lockfile(root, lock_entries)
-            if any(entry.output_path == "opencode.json" for entry in entries):
-                save_managed_state(root, {"mcp_servers": sorted(recommended_mcp)})
+            owned_json_keys = dict(load_managed_state(root).get("json_keys") or {})
+            for result in summary.results:
+                if (
+                    result.strategy == UpdateStrategy.JSON_MERGE
+                    and result.owned_keys is not None
+                    and result.result not in ("ERROR", "SKIPPED")
+                ):
+                    owned_json_keys[result.path] = result.owned_keys
+            managed = {"mcp_servers": sorted(recommended_mcp)}
+            if owned_json_keys:
+                managed["json_keys"] = owned_json_keys
+            save_managed_state(root, managed)
 
         return 1 if summary.error_count > 0 else 0
 
@@ -731,6 +742,7 @@ class Resolution:
     reason: str | None = None
     notes: tuple[str, ...] = ()
     error: str | None = None
+    owned_keys: dict[str, list[str]] | None = None
 
 
 def resolve_text(
@@ -750,7 +762,7 @@ def resolve_text(
     if entry.strategy == UpdateStrategy.MARKER_MERGE:
         return _resolve_marker_merge(target, rendered)
     if entry.strategy == UpdateStrategy.JSON_MERGE:
-        return _resolve_json_merge(root, target, rendered, recommended_mcp)
+        return _resolve_json_merge(root, target, rendered, recommended_mcp, output_path=entry.output_path)
     if entry.strategy == UpdateStrategy.CREATE_IF_MISSING and target.exists():
         return Resolution(None, reason="already exists")
     return Resolution(rendered)
@@ -788,6 +800,8 @@ def _resolve_json_merge(
     target: Path,
     rendered: str,
     recommended_mcp: set[str] | None,
+    *,
+    output_path: str | None = None,
 ) -> Resolution:
     try:
         template_data = json.loads(rendered)
@@ -803,8 +817,34 @@ def _resolve_json_merge(
     else:
         merged = template_data
 
-    changes = tuple(_reconcile_mcp_servers(merged, root, recommended_mcp)) if recommended_mcp is not None else ()
-    return Resolution(json.dumps(merged, indent=4) + "\n", notes=changes)
+    notes: list[str] = []
+    if recommended_mcp is not None:
+        notes.extend(_reconcile_mcp_servers(merged, root, recommended_mcp))
+
+    owned_keys: dict[str, list[str]] | None = None
+    if output_path is not None and isinstance(template_data, dict):
+        managed = load_managed_state(root)
+        record = (managed.get("json_keys") or {}).get(output_path) or {}
+        owned_root = set(record.get(".") or [])
+        rendered_root = set(template_data.keys())
+        merged_root = set(merged.keys()) if isinstance(merged, dict) else set()
+        # delete generator-owned keys no longer rendered (only when we have a prior record)
+        if owned_root:
+            for key in sorted(owned_root - rendered_root):
+                if key in merged:
+                    del merged[key]
+                    notes.append(f"removed JSON key {key!r} (no longer owned)")
+        # report user-owned keys preserved (on disk, not claimed, not rendered)
+        if record:  # only report once we have ownership tracking
+            for key in sorted(merged_root - owned_root - rendered_root):
+                notes.append(f"preserved user JSON key {key!r}")
+        else:
+            # first-v2-apply deferral: no prior record, nothing deleted; report unowned keys
+            for key in sorted(merged_root - rendered_root):
+                notes.append(f"preserved unowned JSON key {key!r} (no prior ownership record)")
+        owned_keys = {".": sorted(rendered_root)}
+
+    return Resolution(json.dumps(merged, indent=4) + "\n", notes=tuple(notes), owned_keys=owned_keys)
 
 
 def _write_rendered(target: Path, text: str) -> None:
@@ -872,6 +912,7 @@ def _handle_json_merge(
             entry.strategy,
             "CREATED",
             warning="; ".join(resolution.notes) or None,
+            owned_keys=resolution.owned_keys,
         )
 
     resolution = resolve_text(entry, root, target, content, recommended_mcp=recommended_mcp)
@@ -886,6 +927,7 @@ def _handle_json_merge(
         entry.strategy,
         "UPDATED",
         warning="; ".join(resolution.notes) or None,
+        owned_keys=resolution.owned_keys,
     )
 
 

@@ -38,6 +38,12 @@ PLAN_CODES: dict[str, int] = {
     "usage": 64,
 }
 
+ENV_CONTEXT_KEYS = ("project_root", "n3rv_binary")
+_ENV_PLACEHOLDER = "\x00ENV\x00"
+# Equal-length pairs that differ at every byte so the full span is env-derived.
+_SENTINEL_A = ("AAAAAAAAAAAAAAAAAAAAAAAA", "CCCCCCCCCCCCCCCCCCCCCCCC")
+_SENTINEL_B = ("BBBBBBBBBBBBBBBBBBBBBBBB", "DDDDDDDDDDDDDDDDDDDDDDDD")
+
 
 class ActionKind(StrEnum):
     CREATE = "create"
@@ -190,11 +196,19 @@ def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
                 continue
             wanted.add(output)
 
+    from n3rv.init import ALWAYS_ON_FAMILY, TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
     selected: list[UpdateEntry] = []
     for entry in FILE_UPDATE_MANIFEST:
         family = family_for(entry.output_path)
-        if family in DECLARABLE_FAMILIES:
+        if family == ALWAYS_ON_FAMILY:
+            selected.append(entry)
+        elif family in DECLARABLE_FAMILIES:
             if entry.output_path in wanted:
+                selected.append(entry)
+        elif family in tier_family_to_attr:
+            if getattr(state.tiers, tier_family_to_attr[family]):
                 selected.append(entry)
         else:
             selected.append(entry)
@@ -210,6 +224,64 @@ def _name(family: str, output_path: str) -> str:
 
 def _singular(family: str) -> str:
     return family[:-1] if family.endswith("s") else family
+
+
+def _env_static_segments(engine: TemplateEngine, entry: UpdateEntry, ctx: dict[str, Any]) -> list[str | None] | None:
+    """Return static/placeholder segments for env-derived spans, or None if none."""
+
+    def _render_with(pair: tuple[str, str]) -> str:
+        c = dict(ctx)
+        c["project_root"], c["n3rv_binary"] = pair
+        return engine.render(entry.template_name, entry_render_context(entry, c))
+
+    sa = _render_with(_SENTINEL_A)
+    sb = _render_with(_SENTINEL_B)
+    if sa == sb:
+        return None
+    # equal-length sentinels keep sa/sb aligned; diff marks env-derived bytes
+    segments: list[str | None] = []
+    start = 0
+    in_env = sa[0] != sb[0]
+    for i in range(len(sa)):
+        now_env = sa[i] != sb[i]
+        if now_env != in_env:
+            if not in_env:
+                segments.append(sa[start:i])
+            else:
+                segments.append(None)
+            start = i
+            in_env = now_env
+    if not in_env:
+        segments.append(sa[start:])
+    else:
+        segments.append(None)
+    return segments
+
+
+def _mask_env_text(text: str, segments: list[str | None]) -> str | None:
+    """Replace env-derived spans with a constant placeholder. None if text doesn't match."""
+    pos = 0
+    out: list[str] = []
+    for i, seg in enumerate(segments):
+        if seg is None:
+            out.append(_ENV_PLACEHOLDER)
+            next_static = next((segments[j] for j in range(i + 1, len(segments)) if segments[j] is not None), None)
+            if next_static is None:
+                pos = len(text)
+            else:
+                idx = text.find(next_static, pos)
+                if idx == -1:
+                    return None
+                pos = idx
+        else:
+            idx = text.find(seg, pos)
+            if idx == -1 or idx != pos:
+                return None
+            out.append(seg)
+            pos += len(seg)
+    if pos != len(text):
+        return None
+    return "".join(out)
 
 
 def build_plan(
@@ -299,6 +371,21 @@ def resolve_actions(
         if current == desired:
             continue
 
+        # env-neutralized compare (defect #4): only env inputs differ -> advisory finding, no action.
+        env_segments = _env_static_segments(engine, entry, ctx)
+        if env_segments is not None:
+            masked_current = _mask_env_text(current, env_segments)
+            masked_desired = _mask_env_text(desired, env_segments)
+            if masked_current is not None and masked_current == masked_desired:
+                findings.append(
+                    Finding(
+                        "environment",
+                        "warn",
+                        f"{entry.output_path}: differs only in environment inputs (project_root / n3rv_binary)",
+                    )
+                )
+                continue
+
         if entry.project_owned and not force_project_files and _project_owned_modified(entry, root, target):
             # update() silently skips these. A reconciler must not: it cannot
             # converge the file without overwriting a human edit, and a warning
@@ -335,7 +422,8 @@ def resolve_actions(
             )
         )
 
-    actions.extend(_deletions(root, entries, lock_entries))
+    actions.extend(_deletions(root, entries, lock_entries, state.tiers))
+    findings.extend(_declined_tier_findings(root, entries, lock_entries, state.tiers))
 
     # Advisory: detection may report, never act.
     from n3rv.reconcile.divergence import detect_divergence
@@ -404,12 +492,15 @@ def _mark_inert(actions: list[Action], blocked: dict[str, str]) -> list[Action]:
     return marked
 
 
-def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any]) -> list[Action]:
+def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any = None) -> list[Action]:
     """Files this generator wrote before and no longer selects.
 
     Only touched when the file still matches what was written: anything a human
     edited becomes a conflict, never a deletion.
     """
+    from n3rv.init import ALWAYS_ON_FAMILY, TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
     selected = {entry.output_path for entry in entries}
     removed: list[Action] = []
     for output_path, record in sorted(lock_entries.items()):
@@ -419,7 +510,15 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
             family = family_for(output_path)
         except Exception:
             continue
-        if family not in DECLARABLE_FAMILIES:
+        if family == ALWAYS_ON_FAMILY:
+            continue
+        if family in DECLARABLE_FAMILIES:
+            pass  # declarable absence is a decline
+        elif family in tier_family_to_attr and tiers is not None:
+            if getattr(tiers, tier_family_to_attr[family]):
+                continue  # tier enabled: absence not a decline
+            # tier declined: fall through to sha-guarded deletion
+        else:
             continue
         target = root / output_path
         if not target.exists():
@@ -443,3 +542,37 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
                 )
             )
     return removed
+
+
+def _declined_tier_findings(
+    root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any
+) -> list[Finding]:
+    """Warn about untracked files in declined tiers (not ours to delete)."""
+    from n3rv.init import TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
+    selected = {entry.output_path for entry in entries}
+    findings: list[Finding] = []
+    for entry in FILE_UPDATE_MANIFEST:
+        try:
+            family = family_for(entry.output_path)
+        except Exception:
+            continue
+        if family not in tier_family_to_attr:
+            continue
+        if getattr(tiers, tier_family_to_attr[family]):
+            continue
+        if entry.output_path in selected or entry.output_path in lock_entries:
+            continue
+        target = root / entry.output_path
+        if target.exists():
+            tier_name = tier_family_to_attr[family]
+            findings.append(
+                Finding(
+                    "tier_declined_untracked",
+                    "warn",
+                    f"{entry.output_path}: tier {tier_name} is declined but the file exists and is untracked; "
+                    "not deleting a file n3rv did not write",
+                )
+            )
+    return findings

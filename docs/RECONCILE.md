@@ -22,10 +22,10 @@ Three commands, three jobs. `plan` never writes, `apply` never verifies, and
 `doctor` never edits. A failure at one step cannot masquerade as a success at
 another.
 
-## `.n3rv/state.yaml` (schema 1)
+## `.n3rv/state.yaml` (schema 2)
 
 ```yaml
-schema: 1
+schema: 2
 project:
   name: radio
   stack: generic
@@ -43,15 +43,35 @@ detection:             # pinned, because templates interpolate it into file bodi
     key_dirs: [caddy, cam, config, web]
   frameworks: []
   tools: []
+  requires_python: ">=3.15"   # pinned from pyproject.toml when present
 mcp:
   servers:             # full specs, not names
     - name: sequential-thinking
       type: local
       command: [npx, -y, "@modelcontextprotocol/server-sequential-thinking@2.1.1"]
+deployment:            # declared topology (operator decision)
+  target: mainframe    # or "none" for repos that are not deployed
+tiers:                 # declinable always-on tiers (floor is AGENTS.md + opencode.json)
+  runtime: true
+  spec_kit: true
+  tooling: true
 board:
   owner: The-Replacement
   project: 1
 ```
+
+Schema v2 is additive over schema 1. A schema 1 file loads under v2 code with
+defaults filled in memory (`requires_python: null`, `deployment.target:
+"mainframe"`, all tiers `true`). Persist the upgrade without re-running
+detection:
+
+```
+n3rv state migrate
+```
+
+`managed.json_keys` in `.n3rv/template-lock.json` records which JSON keys each
+generator-owned output claimed, so a template rename/delete converges instead of
+leaving stale keys behind (user-added keys are preserved and reported).
 
 Three decisions worth understanding:
 

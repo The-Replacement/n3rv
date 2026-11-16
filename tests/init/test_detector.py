@@ -204,3 +204,22 @@ def test_relative_dot_root_derives_the_directory_name(tmp_path: Path, monkeypatc
     info = detect_stack(Path("."))
 
     assert info.project_name == "infra"
+
+
+class TestExtractRequiresPython:
+    def test_reads_project_requires_python(self, tmp_path: Path):
+        from n3rv.init.detector import _extract_requires_python
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nrequires-python = ">=3.15"\n')
+        assert _extract_requires_python(tmp_path / "pyproject.toml") == ">=3.15"
+
+    def test_returns_none_when_missing(self, tmp_path: Path):
+        from n3rv.init.detector import _extract_requires_python
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\n')
+        assert _extract_requires_python(tmp_path / "pyproject.toml") is None
+
+    def test_returns_none_for_missing_file(self, tmp_path: Path):
+        from n3rv.init.detector import _extract_requires_python
+
+        assert _extract_requires_python(tmp_path / "pyproject.toml") is None

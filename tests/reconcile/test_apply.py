@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
+from n3rv import doctor
 from n3rv.init.binary import resolve_n3rv_binary
 from n3rv.init.context import Stack
 from n3rv.init.update import MARKER_START, run_update
@@ -135,6 +137,56 @@ class TestLockfileHonesty:
 
         entries = json.loads((tmp_path / ".n3rv/template-lock.json").read_text())["entries"]
         assert {e["context_hash"] for e in entries.values()} == {state.sha256()}
+
+
+class TestProvenance:
+    def test_a_file_apply_writes_records_the_template_revision(self, tmp_path: Path, capsys) -> None:
+        """n3rv#17: an entry without template_sha256 cannot be traced to a
+        revision, so a drifted file cannot be told apart from a moved
+        template. Every write path records it."""
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
+        run_update(tmp_path)
+        capsys.readouterr()
+        save_state(tmp_path, state_from_tree(tmp_path))
+        target_rel = ".opencode/agents/n3rv.md"
+        (tmp_path / target_rel).write_text("wrecked\n")
+
+        result = _apply(tmp_path)
+
+        assert result.ok
+        entries = json.loads((tmp_path / ".n3rv/template-lock.json").read_text())["entries"]
+        entry = entries[target_rel]
+        # The invariant: the recorded revision is the hash of the file the
+        # entry itself names, so a later template change is detectable.
+        template = TEMPLATES / entry["template"]
+        assert template.is_file()
+        assert entry["template_sha256"] == hashlib.sha256(template.read_bytes()).hexdigest()
+
+    def test_an_entry_without_a_recorded_revision_is_untraced_not_failed(self, tmp_path: Path) -> None:
+        """Old entries must be reported as untraced, not as failures."""
+        (tmp_path / ".opencode").mkdir()
+        lock = tmp_path / ".n3rv" / "template-lock.json"
+        lock.parent.mkdir()
+        lock.write_text(
+            json.dumps(
+                {
+                    "entries": {
+                        "opencode.json": {
+                            "sha256": "x",
+                            "template": "opencode/agents.md.j2",
+                            "context_hash": "y",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = doctor.check_convergence(tmp_path, templates_dir=TEMPLATES)
+
+        assert not result.failed
+        assert any("untraced" in finding.message for finding in result.findings)
+        assert not any("all 1 tracked files match" in finding.message for finding in result.findings)
 
 
 class TestInvalidState:

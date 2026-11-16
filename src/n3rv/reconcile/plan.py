@@ -35,6 +35,7 @@ PLAN_CODES: dict[str, int] = {
     "conflict": 2,
     "divergence": 4,
     "inert": 8,
+    "rejected": 32,
     "usage": 64,
 }
 
@@ -82,6 +83,8 @@ class Plan:
     env_hash: str
     actions: tuple[Action, ...] = ()
     findings: tuple[Finding, ...] = ()
+    force_project_files: bool = False
+    global_config: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -134,6 +137,8 @@ class Plan:
             "templates_sha": self.templates_sha,
             "exit_code": self.exit_code,
             "empty": self.empty,
+            "force_project_files": self.force_project_files,
+            "global_config": self.global_config,
             "actions": [
                 {
                     "kind": a.kind.value,
@@ -455,6 +460,8 @@ def resolve_actions(
             env_hash=env_hash(root, n3rv_binary),
             actions=tuple(actions),
             findings=tuple(findings),
+            force_project_files=force_project_files,
+            global_config=str(global_config) if global_config is not None else None,
         ),
         resolutions,
     )

@@ -304,3 +304,44 @@ class TestTierGating:
         actions = [a for a in plan.actions if a.target == ".n3rv/a2a-config.yaml"]
         assert actions == []
         assert any(f.code == "tier_declined_untracked" for f in plan.findings)
+
+
+class TestPlanFileFields:
+    def test_to_dict_includes_recorded_inputs(self, tmp_path: Path) -> None:
+        import json
+
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        plan = build_plan(
+            tmp_path,
+            state,
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary="n3rv",
+            force_project_files=True,
+            global_config=tmp_path / "cfg.json",
+        )
+        d = plan.to_dict()
+        assert d["force_project_files"] is True
+        assert d["global_config"] == str(tmp_path / "cfg.json")
+        roundtrip = json.loads(json.dumps(d))
+        assert roundtrip["force_project_files"] is True
+        assert roundtrip["global_config"] == str(tmp_path / "cfg.json")
+
+    def test_plan_hash_unchanged_by_recorded_inputs(self, tmp_path: Path) -> None:
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        a = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv")
+        b = build_plan(
+            tmp_path,
+            state,
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary="n3rv",
+            global_config=tmp_path / "cfg.json",
+        )
+        assert a.plan_hash == b.plan_hash
+
+    def test_rejected_exit_code(self) -> None:
+        assert PLAN_CODES["rejected"] == 32
+        others = {v for k, v in PLAN_CODES.items() if k != "rejected"}
+        assert 32 not in others
+        assert others == {1, 2, 4, 8, 64}

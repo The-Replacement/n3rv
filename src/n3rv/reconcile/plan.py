@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +36,7 @@ PLAN_CODES: dict[str, int] = {
     "conflict": 2,
     "divergence": 4,
     "inert": 8,
+    "rejected": 32,
     "usage": 64,
 }
 
@@ -82,6 +84,8 @@ class Plan:
     env_hash: str
     actions: tuple[Action, ...] = ()
     findings: tuple[Finding, ...] = ()
+    force_project_files: bool = False
+    global_config: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -125,6 +129,100 @@ class Plan:
                 code |= PLAN_CODES["usage"]
         return code
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Plan:
+        if not isinstance(data, dict):
+            from n3rv.reconcile.planfile import PlanFileError
+
+            raise PlanFileError("plan file: expected a JSON object")
+
+        def _require(key: str, types: tuple[type, ...] | type, *, allow_none: bool = False) -> Any:
+            from n3rv.reconcile.planfile import PlanFileError
+
+            if key not in data:
+                raise PlanFileError(f"missing required key: {key}")
+            val = data[key]
+            if allow_none and val is None:
+                return val
+            if not isinstance(val, types):
+                raise PlanFileError(f"wrong type for key: {key}")
+            return val
+
+        state_sha = _require("state_sha", str)
+        n3rv_version = _require("n3rv_version", str)
+        templates_sha_v = _require("templates_sha", str)
+        env_hash_v = _require("env_hash", str)
+        _require("exit_code", int)
+        _require("empty", bool)
+        force_project_files = _require("force_project_files", bool)
+        global_config = _require("global_config", str, allow_none=True)
+        plan_hash_v = _require("plan_hash", str)
+        actions_raw = _require("actions", list)
+        findings_raw = _require("findings", list)
+
+        from n3rv.reconcile.planfile import PlanFileError
+
+        if not re.fullmatch(r"[0-9a-f]{64}", plan_hash_v):
+            raise PlanFileError("wrong type or format for key: plan_hash")
+
+        actions: list[Action] = []
+        action_keys = {"kind", "target", "strategy", "reason", "source", "current_sha", "desired_sha"}
+        for item in actions_raw:
+            if not isinstance(item, dict):
+                raise PlanFileError("wrong type for key: actions")
+            missing = [k for k in action_keys if k not in item]
+            if missing:
+                raise PlanFileError(f"missing required key: {missing[0]}")
+            kind_val = item["kind"]
+            if not isinstance(kind_val, str):
+                raise PlanFileError("wrong type for key: kind")
+            try:
+                kind = ActionKind(kind_val)
+            except ValueError as exc:
+                raise PlanFileError(f"bad action kind: {kind_val}") from exc
+            for k in ("target", "strategy", "reason"):
+                if not isinstance(item[k], str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            for k in ("source", "current_sha", "desired_sha"):
+                v = item[k]
+                if v is not None and not isinstance(v, str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            actions.append(
+                Action(
+                    kind=kind,
+                    target=item["target"],
+                    strategy=item["strategy"],
+                    reason=item["reason"],
+                    source=item["source"],
+                    current_sha=item["current_sha"],
+                    desired_sha=item["desired_sha"],
+                )
+            )
+
+        findings: list[Finding] = []
+        finding_keys = {"code", "level", "message"}
+        for item in findings_raw:
+            if not isinstance(item, dict):
+                raise PlanFileError("wrong type for key: findings")
+            missing = [k for k in finding_keys if k not in item]
+            if missing:
+                raise PlanFileError(f"missing required key: {missing[0]}")
+            for k in finding_keys:
+                if not isinstance(item[k], str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            findings.append(Finding(code=item["code"], level=item["level"], message=item["message"]))
+
+        return cls(
+            state_sha=state_sha,
+            n3rv_version=n3rv_version,
+            templates_sha=templates_sha_v,
+            env_hash=env_hash_v,
+            actions=tuple(actions),
+            findings=tuple(findings),
+            force_project_files=force_project_files,
+            global_config=global_config,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "plan_hash": self.plan_hash,
@@ -134,6 +232,8 @@ class Plan:
             "templates_sha": self.templates_sha,
             "exit_code": self.exit_code,
             "empty": self.empty,
+            "force_project_files": self.force_project_files,
+            "global_config": self.global_config,
             "actions": [
                 {
                     "kind": a.kind.value,
@@ -162,6 +262,10 @@ def templates_sha(templates_dir: Path) -> str:
 def env_hash(project_root: Path, n3rv_binary: str) -> str:
     payload = {"root": str(project_root), "binary": n3rv_binary}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def file_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
@@ -403,7 +507,7 @@ def resolve_actions(
                     entry.strategy.value,
                     reason,
                     entry.template_name,
-                    hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                    file_sha(target),
                     desired_sha,
                 )
             )
@@ -417,7 +521,7 @@ def resolve_actions(
                 entry.strategy.value,
                 "content differs from the declared state" if tracked else "untracked by the lockfile",
                 entry.template_name,
-                hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                file_sha(target),
                 desired_sha,
             )
         )
@@ -455,6 +559,8 @@ def resolve_actions(
             env_hash=env_hash(root, n3rv_binary),
             actions=tuple(actions),
             findings=tuple(findings),
+            force_project_files=force_project_files,
+            global_config=str(global_config) if global_config is not None else None,
         ),
         resolutions,
     )
@@ -523,7 +629,7 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
         target = root / output_path
         if not target.exists():
             continue
-        current_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        current_sha = file_sha(target)
         recorded = str((record or {}).get("sha256") or "")
         if recorded and recorded == current_sha:
             removed.append(

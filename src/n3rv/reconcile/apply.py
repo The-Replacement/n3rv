@@ -19,6 +19,7 @@ from typing import Any
 from n3rv.init.lockfile import load_lockfile, record_entry, save_lockfile, save_managed_state
 from n3rv.init.update import _write_rendered
 from n3rv.reconcile.plan import ActionKind, Plan, resolve_actions
+from n3rv.reconcile.planfile import PlanRejectedError, load_plan_file, validate_plan_file
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,32 @@ def apply_plan(
         force_project_files=force_project_files,
         global_config=global_config,
     )
+    return apply_resolved_plan(root, state, plan, resolutions, templates_dir=templates_dir)
+
+
+def apply_plan_file(
+    root: Path,
+    state: Any,
+    *,
+    plan_file: Path,
+    templates_dir: Path,
+    n3rv_version: str,
+    n3rv_binary: str,
+) -> ApplyResult:
+    """Apply a saved plan file after re-validating its preconditions."""
+    saved, recorded_plan_hash = load_plan_file(plan_file)
+    validate_plan_file(saved, root=root, state=state, templates_dir=templates_dir, n3rv_version=n3rv_version)
+    plan, resolutions = resolve_actions(
+        root,
+        state,
+        templates_dir=templates_dir,
+        n3rv_version=n3rv_version,
+        n3rv_binary=n3rv_binary,
+        force_project_files=saved.force_project_files,
+        global_config=Path(saved.global_config) if saved.global_config else None,
+    )
+    if plan.plan_hash != recorded_plan_hash:
+        raise PlanRejectedError("plan_hash", f"expected {recorded_plan_hash}, got {plan.plan_hash}")
     return apply_resolved_plan(root, state, plan, resolutions, templates_dir=templates_dir)
 
 

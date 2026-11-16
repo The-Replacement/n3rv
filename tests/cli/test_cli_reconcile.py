@@ -114,3 +114,113 @@ class TestSurface:
 
         assert "plan" in result.stdout
         assert "apply" in result.stdout
+
+
+class TestPlanFile:
+    def test_plan_output_equals_json(self, tmp_path: Path) -> None:
+        root = _converged(tmp_path)
+        out = root / "plan.json"
+        r_json = runner.invoke(app, ["plan", "--root", str(root), "--json", "--global-config", str(_policy(tmp_path))])
+        r_out = runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(out), "--global-config", str(_policy(tmp_path))]
+        )
+        assert r_out.exit_code == r_json.exit_code
+        assert out.read_text() == r_json.stdout if r_json.stdout.endswith("\n") else r_json.stdout + "\n"
+
+    def test_plan_output_and_json_mutually_exclusive(self, tmp_path: Path) -> None:
+        root = _converged(tmp_path)
+        out = root / "plan.json"
+        result = runner.invoke(app, ["plan", "--root", str(root), "--json", "--output", str(out)])
+        assert result.exit_code == PLAN_CODES["usage"]
+
+    def test_apply_plan_file_converges(self, tmp_path: Path) -> None:
+        root = _converged(tmp_path)
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        pf = root / "plan.json"
+        runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(pf), "--global-config", str(_policy(tmp_path))]
+        )
+        result = runner.invoke(app, ["apply", "--root", str(root), "--plan-file", str(pf)])
+        assert result.exit_code == 0
+        assert target.read_text() != "wrecked\n"
+
+    def _snapshot(self, root: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file() and p.name != "state.yaml" and p.name != "plan.json"
+        }
+
+    def test_apply_plan_file_state_drift_rejected(self, tmp_path: Path) -> None:
+        root = _converged(tmp_path)
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        pf = root / "plan.json"
+        runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(pf), "--global-config", str(_policy(tmp_path))]
+        )
+        # mutate state in a way that changes canonical sha
+        state_path = root / ".n3rv/state.yaml"
+        state_path.write_text(state_path.read_text().replace("name: demo", "name: demo2", 1))
+        before = self._snapshot(root)
+        result = runner.invoke(app, ["apply", "--root", str(root), "--plan-file", str(pf)])
+        assert result.exit_code == PLAN_CODES["rejected"]
+        assert "state_sha" in (result.stdout + result.stderr)
+        assert self._snapshot(root) == before
+
+    def test_apply_plan_file_template_drift_rejected(self, tmp_path: Path, monkeypatch) -> None:
+        import shutil
+
+        import n3rv.cli_reconcile as cli_rec
+
+        root = _converged(tmp_path)
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        # plan against a temp templates dir we control
+        tdir = tmp_path / "tmpl"
+        shutil.copytree(cli_rec._TEMPLATES, tdir, dirs_exist_ok=True)
+        monkeypatch.setattr(cli_rec, "_TEMPLATES", tdir)
+        pf = root / "plan.json"
+        runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(pf), "--global-config", str(_policy(tmp_path))]
+        )
+        any_j2 = next(tdir.rglob("*.j2"))
+        any_j2.write_text(any_j2.read_text() + "\nchanged\n")
+        before = self._snapshot(root)
+        result = runner.invoke(app, ["apply", "--root", str(root), "--plan-file", str(pf)])
+        assert result.exit_code == PLAN_CODES["rejected"]
+        assert "templates_sha" in (result.stdout + result.stderr)
+        assert self._snapshot(root) == before
+
+    def test_apply_plan_file_version_drift_rejected(self, tmp_path: Path, monkeypatch) -> None:
+        import n3rv.cli_reconcile as cli_rec
+
+        root = _converged(tmp_path)
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        pf = root / "plan.json"
+        runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(pf), "--global-config", str(_policy(tmp_path))]
+        )
+        monkeypatch.setattr(cli_rec, "_version", lambda: "9.9.9")
+        before = self._snapshot(root)
+        result = runner.invoke(app, ["apply", "--root", str(root), "--plan-file", str(pf)])
+        assert result.exit_code == PLAN_CODES["rejected"]
+        assert "n3rv_version" in (result.stdout + result.stderr)
+        assert self._snapshot(root) == before
+
+    def test_apply_plan_file_target_drift_rejected(self, tmp_path: Path) -> None:
+        root = _converged(tmp_path)
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        pf = root / "plan.json"
+        runner.invoke(
+            app, ["plan", "--root", str(root), "--output", str(pf), "--global-config", str(_policy(tmp_path))]
+        )
+        target.write_text("wrecked-again\n")
+        before = self._snapshot(root)
+        result = runner.invoke(app, ["apply", "--root", str(root), "--plan-file", str(pf)])
+        assert result.exit_code == PLAN_CODES["rejected"]
+        assert ".opencode/agents/n3rv.md" in (result.stdout + result.stderr)
+        assert self._snapshot(root) == before

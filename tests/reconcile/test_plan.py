@@ -304,3 +304,138 @@ class TestTierGating:
         actions = [a for a in plan.actions if a.target == ".n3rv/a2a-config.yaml"]
         assert actions == []
         assert any(f.code == "tier_declined_untracked" for f in plan.findings)
+
+
+class TestPlanFileFields:
+    def test_to_dict_includes_recorded_inputs(self, tmp_path: Path) -> None:
+        import json
+
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        plan = build_plan(
+            tmp_path,
+            state,
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary="n3rv",
+            force_project_files=True,
+            global_config=tmp_path / "cfg.json",
+        )
+        d = plan.to_dict()
+        assert d["force_project_files"] is True
+        assert d["global_config"] == str(tmp_path / "cfg.json")
+        roundtrip = json.loads(json.dumps(d))
+        assert roundtrip["force_project_files"] is True
+        assert roundtrip["global_config"] == str(tmp_path / "cfg.json")
+
+    def test_plan_hash_unchanged_by_recorded_inputs(self, tmp_path: Path) -> None:
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        a = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv")
+        b = build_plan(
+            tmp_path,
+            state,
+            templates_dir=TEMPLATES,
+            n3rv_version="dev",
+            n3rv_binary="n3rv",
+            global_config=tmp_path / "cfg.json",
+        )
+        assert a.plan_hash == b.plan_hash
+
+    def test_rejected_exit_code(self) -> None:
+        assert PLAN_CODES["rejected"] == 32
+        others = {v for k, v in PLAN_CODES.items() if k != "rejected"}
+        assert 32 not in others
+        assert others == {1, 2, 4, 8, 64}
+
+    def test_from_dict_roundtrip(self, tmp_path: Path) -> None:
+        from n3rv.reconcile.plan import Plan
+
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        plan = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv")
+        restored = Plan.from_dict(plan.to_dict())
+        assert restored.to_dict() == plan.to_dict()
+        assert restored.plan_hash == plan.plan_hash
+
+    def test_from_dict_rejects_malformed(self, tmp_path: Path) -> None:
+        import pytest
+
+        from n3rv.reconcile.plan import Plan
+        from n3rv.reconcile.planfile import PlanFileError
+
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        base = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv").to_dict()
+
+        cases = [
+            ("missing state_sha", {k: v for k, v in base.items() if k != "state_sha"}),
+            ("wrong type for key: actions", {**base, "actions": "nope"}),
+            (
+                "missing required key: kind",
+                {**base, "actions": [{k: v for k, v in base["actions"][0].items() if k != "kind"}]},
+            )
+            if base["actions"]
+            else None,
+            ("wrong type for key: findings", {**base, "findings": None}),
+            ("wrong type or format for key: plan_hash", {**base, "plan_hash": "abc"}),
+            ("wrong type for key: force_project_files", {**base, "force_project_files": "true"}),
+        ]
+        # ensure we have an action for kind-missing case
+        if not base["actions"]:
+            cases[2] = (
+                "missing required key: kind",
+                {
+                    **base,
+                    "actions": [
+                        {
+                            "target": "x",
+                            "strategy": "s",
+                            "reason": "r",
+                            "source": None,
+                            "current_sha": None,
+                            "desired_sha": None,
+                        }
+                    ],
+                },
+            )
+        for msg, data in cases:
+            assert data is not None
+            with pytest.raises(PlanFileError) as exc:
+                Plan.from_dict(data)
+            assert msg.split(":")[0] in str(exc.value) or msg.split(" ")[0] in str(exc.value)
+
+    def test_from_dict_rejects_bad_action_kind(self, tmp_path: Path) -> None:
+        import pytest
+
+        from n3rv.reconcile.plan import Plan
+        from n3rv.reconcile.planfile import PlanFileError
+
+        state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
+        base = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv").to_dict()
+        base["actions"] = [
+            {
+                "kind": "bogus",
+                "target": "x",
+                "strategy": "s",
+                "reason": "r",
+                "source": None,
+                "current_sha": None,
+                "desired_sha": None,
+            }
+        ]
+        with pytest.raises(PlanFileError) as exc:
+            Plan.from_dict(base)
+        assert "kind" in str(exc.value) or "bogus" in str(exc.value)
+
+
+class TestCurrentShaNormalization:
+    def test_current_sha_uses_read_bytes(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        target = root / ".opencode/agents/n3rv.md"
+        crlf = b"hello\r\nworld\r\n"
+        target.write_bytes(crlf)
+        plan = _plan(root)
+        actions = [a for a in plan.actions if a.target == ".opencode/agents/n3rv.md"]
+        assert actions
+        assert actions[0].current_sha == hashlib.sha256(crlf).hexdigest()
+        # read_text normalization would differ on universal newlines decode/encode in some contexts
+        # bytes hash must be authoritative; ensure it's computed from bytes
+        assert actions[0].current_sha == hashlib.sha256(target.read_bytes()).hexdigest()

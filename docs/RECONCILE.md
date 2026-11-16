@@ -183,8 +183,16 @@ marker merge preserves it.
 - No GitHub writes: `board.sync_issue` stays an explicit adapter call, so a
   network failure cannot look like local drift.
 - No policy edits: inert is reported, never resolved by widening the allowlist.
-- No plan file: `apply` recomputes. A saved plan could describe actions that no
-  longer match reality; the state is the authority.
+- Plan files: `n3rv plan --output plan.json` saves the reviewed plan.
+  `n3rv apply --plan-file plan.json` re-validates preconditions (`state_sha`,
+  `templates_sha`, `n3rv_version`, per-action `current_sha`) against the live
+  tree, re-renders, and compares `plan_hash`; on any mismatch it refuses with
+  the first divergence named and writes nothing. No `--force`.
+
+Plan-file rejection exits with code **32** (`PLAN_CODES["rejected"]`), distinct
+from drift/conflict/divergence/inert/usage exit bits. It means the saved plan no
+longer matches the current tree, templates, or n3rv version, so nothing was
+applied.
 
 ## Worked example
 

@@ -476,26 +476,21 @@ FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
     (".githooks/", "hooks"),
     (".specify/", "spec-kit"),
     (".n3rv/", "runtime"),
+    (".opencode/plugins/", "tooling"),
+    (".opencode/shared/", "tooling"),
+    (".opencode/tools/", "tooling"),
 )
 
-#: Prefixes whose outputs are always installed, never selected by component.
-_ALWAYS_ON_PREFIXES: tuple[str, ...] = (
-    ".opencode/plugins/",
-    ".opencode/shared/",
-    ".opencode/tools/",
-)
+#: Floor outputs: always installed, never declinable (the minimal tree).
+_ALWAYS_ON_FILES: frozenset[str] = frozenset({"AGENTS.md", "opencode.json"})
 
-#: Individual always-on outputs that match no prefix above.
-_ALWAYS_ON_FILES: frozenset[str] = frozenset(
-    {
-        "AGENTS.md",
-        "opencode.json",
-        "opencode.template.json",
-        ".opencode/package.json",
-    }
-)
+#: Tooling outputs that are declinable via tiers.tooling.
+_TOOLING_FILES: frozenset[str] = frozenset({"opencode.template.json", ".opencode/package.json"})
 
-#: Families a project may declare in .n3rv/state.yaml. The rest are always on.
+#: Tier name -> family name for the declinable always-on tiers.
+TIER_FAMILIES: dict[str, str] = {"runtime": "runtime", "spec_kit": "spec-kit", "tooling": "tooling"}
+
+#: Families a project may declare in .n3rv/state.yaml. The rest are tiers or floor.
 DECLARABLE_FAMILIES: frozenset[str] = frozenset({"agents", "skills", "commands", "hooks"})
 
 ALWAYS_ON_FAMILY = "root"
@@ -516,9 +511,12 @@ def family_for(output_path: str) -> str:
     for prefix, family in FAMILY_PREFIXES:
         if output_path.startswith(prefix):
             return family
-    if output_path in _ALWAYS_ON_FILES or output_path.startswith(_ALWAYS_ON_PREFIXES):
+    if output_path in _ALWAYS_ON_FILES:
         return ALWAYS_ON_FAMILY
+    if output_path in _TOOLING_FILES:
+        return "tooling"
     raise UnknownFamilyError(f"no component family for generated output {output_path!r}")
+
 
 
 def run_init(

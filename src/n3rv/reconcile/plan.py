@@ -492,9 +492,7 @@ def _mark_inert(actions: list[Action], blocked: dict[str, str]) -> list[Action]:
     return marked
 
 
-def _deletions(
-    root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any = None
-) -> list[Action]:
+def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any = None) -> list[Action]:
     """Files this generator wrote before and no longer selects.
 
     Only touched when the file still matches what was written: anything a human

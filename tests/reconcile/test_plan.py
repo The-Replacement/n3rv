@@ -202,9 +202,7 @@ class TestEnvNeutralization:
         state = state_from_tree(root)
 
         for binary in ("/a/n3rv", "/b/n3rv", "/totally/different/path/n3rv"):
-            plan = build_plan(
-                root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=binary
-            )
+            plan = build_plan(root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=binary)
             assert plan.empty, [f"{a.kind} {a.target} {a.reason}" for a in plan.actions]
             assert plan.exit_code == 0
 
@@ -215,9 +213,7 @@ class TestEnvNeutralization:
         hub.unlink()
         state = state_from_tree(root)
 
-        plan = build_plan(
-            root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="/other/n3rv"
-        )
+        plan = build_plan(root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="/other/n3rv")
 
         hub_actions = [a for a in plan.actions if a.target == self.HUB]
         assert len(hub_actions) == 1

@@ -93,6 +93,7 @@ def test_state_init_accepts_a_relative_dot_root(tmp_path: Path, monkeypatch) -> 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert load_state(repo).project.name == "infra"
 
+
 def test_state_migrate_rewrites_schema_v2(tmp_path: Path) -> None:
     path = state_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)

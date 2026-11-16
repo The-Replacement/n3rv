@@ -158,3 +158,153 @@ class TestValidatePlanFile:
         with pytest.raises(PlanRejectedError) as exc:
             validate_plan_file(plan, root=root, state=state, templates_dir=tdir, n3rv_version="other")
         assert exc.value.field == "templates_sha"
+
+
+class TestApplyPlanFile:
+    def test_converges_identically_to_plain_apply(self, tmp_path: Path, capsys) -> None:
+        from n3rv.reconcile import load_state, save_state
+        from n3rv.reconcile.apply import apply_plan, apply_plan_file
+
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        save_state(root, state_from_tree(root))
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        state = load_state(root)
+        plan = _plan(root, state)
+        pf = root / "plan.json"
+        pf.write_text(json.dumps(plan.to_dict(), indent=2))
+
+        result = apply_plan_file(
+            root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+        )
+        assert result.ok
+        assert plan.plan_hash == result.plan_hash
+        assert target.read_text() != "wrecked\n"
+
+        # compare with plain apply on fresh drifted tree
+        root2 = tmp_path / "r2"
+        root2.mkdir()
+        root2 = _converged(root2)
+        capsys.readouterr()
+        save_state(root2, state_from_tree(root2))
+        (root2 / ".opencode/agents/n3rv.md").write_text("wrecked\n")
+        state2 = load_state(root2)
+        plain = apply_plan(root2, state2, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert plain.ok
+        assert {a.target for a in plain.applied} == {a.target for a in result.applied}
+
+    def test_refusal_writes_nothing(self, tmp_path: Path, capsys) -> None:
+        import hashlib
+        from n3rv.reconcile import load_state, save_state
+        from n3rv.reconcile.apply import apply_plan_file
+
+        def snapshot(r: Path) -> dict[str, str]:
+            return {
+                str(p.relative_to(r)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(r.rglob("*"))
+                if p.is_file() and p.name != "state.yaml"
+            }
+
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        save_state(root, state_from_tree(root))
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        state = load_state(root)
+        plan = _plan(root, state)
+        pf = root / "plan.json"
+        pf.write_text(json.dumps(plan.to_dict(), indent=2))
+        # mutate target so content drift (target mismatch)
+        target.write_text("wrecked-again\n")
+        before = snapshot(root)
+        lock_before = (root / ".n3rv/template-lock.json").read_bytes() if (root / ".n3rv/template-lock.json").exists() else None
+        with pytest.raises(PlanRejectedError):
+            apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert snapshot(root) == before
+        lock_after = (root / ".n3rv/template-lock.json").read_bytes() if (root / ".n3rv/template-lock.json").exists() else None
+        assert lock_after == lock_before
+
+    def test_no_apply_resolved_plan_on_refusal(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        from n3rv.reconcile import load_state, save_state
+        import n3rv.reconcile.apply as apply_mod
+
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        save_state(root, state_from_tree(root))
+        target = root / ".opencode/agents/n3rv.md"
+        target.write_text("wrecked\n")
+        state = load_state(root)
+        plan = _plan(root, state)
+        pf = root / "plan.json"
+        pf.write_text(json.dumps(plan.to_dict(), indent=2))
+        target.write_text("wrecked-again\n")
+
+        called = {"n": 0}
+        orig = apply_mod.apply_resolved_plan
+
+        def spy(*a, **k):
+            called["n"] += 1
+            return orig(*a, **k)
+
+        monkeypatch.setattr(apply_mod, "apply_resolved_plan", spy)
+        with pytest.raises(PlanRejectedError):
+            apply_mod.apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert called["n"] == 0
+
+    def test_plan_hash_backstop_on_flag_drift(self, tmp_path: Path, capsys) -> None:
+        from n3rv.init.update import MARKER_START
+        from n3rv.reconcile import load_state, save_state
+        from n3rv.reconcile.apply import apply_plan_file
+
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        save_state(root, state_from_tree(root))
+        agents = root / "AGENTS.md"
+        text = agents.read_text(encoding="utf-8")
+        line_end = text.find("\n", text.find(MARKER_START))
+        agents.write_text(text[: line_end + 1] + "hand edit\n" + text[line_end + 1 :], encoding="utf-8")
+        state = load_state(root)
+
+        # plan without force -> conflict
+        plan_no = build_plan(root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        pf_no = root / "plan_no.json"
+        pf_no.write_text(json.dumps(plan_no.to_dict(), indent=2))
+        # plan with force -> update
+        plan_yes = build_plan(root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY, force_project_files=True)
+        pf_yes = root / "plan_yes.json"
+        pf_yes.write_text(json.dumps(plan_yes.to_dict(), indent=2))
+        assert plan_no.plan_hash != plan_yes.plan_hash
+
+        # apply forced plan converges (recorded flag wins)
+        result = apply_plan_file(root, state, plan_file=pf_yes, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert result.ok
+
+        # plan_hash backstop: forge recorded hash while preconditions still match
+        state3 = load_state(root)
+        plan3 = _plan(root, state3)
+        pf3 = root / "plan3.json"
+        pf3.write_text(json.dumps(plan3.to_dict(), indent=2))
+        d = json.loads(pf3.read_text())
+        d["plan_hash"] = "0" * 64
+        forged = root / "plan_forged.json"
+        forged.write_text(json.dumps(d, indent=2))
+        with pytest.raises(PlanRejectedError) as exc:
+            apply_plan_file(root, state3, plan_file=forged, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert exc.value.field == "plan_hash"
+
+    def test_empty_plan_converges(self, tmp_path: Path, capsys) -> None:
+        from n3rv.reconcile import load_state, save_state
+        from n3rv.reconcile.apply import apply_plan_file
+
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        save_state(root, state_from_tree(root))
+        state = load_state(root)
+        plan = _plan(root, state)
+        assert plan.empty
+        pf = root / "plan.json"
+        pf.write_text(json.dumps(plan.to_dict(), indent=2))
+        result = apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        assert result.ok
+        assert result.applied == []

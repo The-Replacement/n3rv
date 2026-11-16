@@ -145,19 +145,31 @@ class TestInit:
             for phase in re.findall(r"--phase\s+([a-z-]+)", text):
                 assert phase in PHASE_TRANSITIONS, f"{skill.parent.name}: unknown phase {phase!r}"
 
-    def test_generated_agents_md_does_not_pin_a_python_version(self, tmp_path: Path) -> None:
-        """The template cannot know the floor, so it must not assert one.
-
-        A hardcoded ``>=3.11`` overwrote a correct hand-edit in
-        The-Replacement/indiegenerator, whose pyproject says ``>=3.15``, and
-        AGENTS.md is gitignored, so the regression was invisible to review.
-        """
+    def test_generated_agents_md_omits_python_version_when_not_declared(self, tmp_path: Path) -> None:
+        """No requires-python in the manifest means AGENTS.md states nothing about Python."""
         _write_fastapi_pyproject(tmp_path)
         run_init(tmp_path, project_name=None, stack_override=None, force=True)
 
         content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
-        assert "requires-python" in content
         assert "Python: >=" not in content
+        assert "`requires-python` in `pyproject.toml`" not in content
+
+    def test_generated_agents_md_pins_python_version_from_pyproject(self, tmp_path: Path) -> None:
+        """A declared requires-python is pinned into AGENTS.md (schema v2, AC-2.2)."""
+        (tmp_path / "pyproject.toml").write_text(
+            """[project]
+name = "fastapp"
+version = "0.1.0"
+requires-python = ">=3.15"
+dependencies = ["fastapi>=0.100.0"]
+""",
+            encoding="utf-8",
+        )
+        run_init(tmp_path, project_name=None, stack_override=None, force=True)
+
+        content = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+        assert "Python: >=3.15" in content
+        assert "`requires-python` in `pyproject.toml`" not in content
 
     def test_generated_configs_inherit_secured_global_mcp_servers(self, tmp_path: Path) -> None:
         _write_fastapi_pyproject(tmp_path)

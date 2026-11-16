@@ -75,9 +75,9 @@ contract a gate must satisfy:
 
 Already true, and worth stating so it is not re-invented:
 
-- `state.yaml` carries `schema: 1`; a shape change is a schema change with a
-  migration, not a new key. (Three fields are now queued for schema v2 — see
-  n3rv#15.)
+- `state.yaml` carries `schema: 2`; a shape change is a schema change with a
+  migration, not a new key. (Schema v2 landed in n3rv#16: `requires_python`,
+  `deployment.target`, `tiers`, and JSON key ownership via `managed.json_keys`.)
 - `template-lock.json` records the template revision each output was generated
   from, so "which harness wrote this file" is answerable per file.
 - A migration records its round-trip in the PR body: `state init` → `plan`
@@ -92,14 +92,12 @@ returns nothing. The "archived-fork migration path" item is therefore closed as
 not applicable rather than migrated. If the repository ever returns, this
 paragraph is wrong and the item reopens.
 
-## What this leaves open
+## Schema v2 (n3rv#16)
 
-The always-on tier. `infra` declares **zero** components and still receives ten
-generated files, including `.n3rv/systemd/n3rv-hub.service` and
-`.n3rv/a2a-config.yaml` — an A2A hub unit for a repository that runs no hub.
-`DECLARABLE_FAMILIES` covers only `agents`, `skills`, `commands`, `hooks`, so
-those files cannot be declined.
-
-That is a defect of the tier, not of `infra`, and it is tracked as n3rv#15 with
-the other schema v2 tenants. Until it lands, a thin repository's tree is larger
-than its needs and everyone should know that when reading its `plan`.
+Schema v2 makes the always-on tier and deployment topology declarable. A
+repository can decline `tiers.runtime`, `tiers.spec_kit`, and `tiers.tooling`
+(leaving only the floor: `AGENTS.md` + `opencode.json`), declare
+`deployment.target: none`, and pin `detection.requires_python` from
+`pyproject.toml`. JSON key ownership (`managed.json_keys`) lets template
+renames converge instead of leaving stale keys. A repo that declines a tier it
+already has on disk gets a sha-guarded delete/conflict, never a silent removal.

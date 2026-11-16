@@ -9,8 +9,9 @@ import typer
 
 from n3rv.init.binary import resolve_n3rv_binary
 from n3rv.reconcile import StateError, load_state
-from n3rv.reconcile.apply import apply_plan
-from n3rv.reconcile.plan import build_plan
+from n3rv.reconcile.apply import apply_plan, apply_plan_file
+from n3rv.reconcile.plan import PLAN_CODES, build_plan
+from n3rv.reconcile.planfile import PlanFileError, PlanRejectedError
 
 reconcile_app = typer.Typer(help="Plan and apply the declared state")
 
@@ -51,6 +52,7 @@ def _print_plan(plan: object) -> None:
 def plan_cmd(
     root: Path = typer.Option(Path.cwd(), "--root", help="Project root directory"),
     json_output: bool = typer.Option(False, "--json", help="Emit the plan as JSON"),
+    output: Path | None = typer.Option(None, "--output", help="Write the plan JSON to a file"),
     force_project_files: bool = typer.Option(
         False, "--force-project-files", help="Include project-owned files whose managed region changed"
     ),
@@ -59,6 +61,9 @@ def plan_cmd(
     ),
 ) -> None:
     """Show what apply would do. Reads only; never writes."""
+    if output is not None and json_output:
+        typer.echo("✗ --output and --json are mutually exclusive", err=True)
+        raise typer.Exit(code=PLAN_CODES["usage"])
     state = _load(root)
     plan = build_plan(
         root,
@@ -69,7 +74,9 @@ def plan_cmd(
         force_project_files=force_project_files,
         global_config=global_config,
     )
-    if json_output:
+    if output is not None:
+        output.write_text(json.dumps(plan.to_dict(), indent=2) + "\n", encoding="utf-8")
+    elif json_output:
         typer.echo(json.dumps(plan.to_dict(), indent=2))
     else:
         _print_plan(plan)
@@ -80,6 +87,7 @@ def plan_cmd(
 def apply_cmd(
     root: Path = typer.Option(Path.cwd(), "--root", help="Project root directory"),
     json_output: bool = typer.Option(False, "--json", help="Emit the result as JSON"),
+    plan_file: Path | None = typer.Option(None, "--plan-file", help="Apply a saved plan file"),
     force_project_files: bool = typer.Option(
         False, "--force-project-files", help="Overwrite project-owned files whose managed region changed"
     ),
@@ -92,15 +100,32 @@ def apply_cmd(
     Conflicts and inert actions are skipped, never guessed at.
     """
     state = _load(root)
-    result = apply_plan(
-        root,
-        state,
-        templates_dir=_TEMPLATES,
-        n3rv_version=_version(),
-        n3rv_binary=resolve_n3rv_binary() or "n3rv",
-        force_project_files=force_project_files,
-        global_config=global_config,
-    )
+    if plan_file is not None:
+        try:
+            result = apply_plan_file(
+                root,
+                state,
+                plan_file=plan_file,
+                templates_dir=_TEMPLATES,
+                n3rv_version=_version(),
+                n3rv_binary=resolve_n3rv_binary() or "n3rv",
+            )
+        except PlanFileError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(code=PLAN_CODES["usage"]) from exc
+        except PlanRejectedError as exc:
+            typer.echo(f"✗ plan rejected: {exc.field} {exc.detail}; nothing written", err=True)
+            raise typer.Exit(code=PLAN_CODES["rejected"]) from exc
+    else:
+        result = apply_plan(
+            root,
+            state,
+            templates_dir=_TEMPLATES,
+            n3rv_version=_version(),
+            n3rv_binary=resolve_n3rv_binary() or "n3rv",
+            force_project_files=force_project_files,
+            global_config=global_config,
+        )
 
     if json_output:
         typer.echo(

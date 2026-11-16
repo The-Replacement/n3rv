@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+import re
 
 from n3rv.init import DECLARABLE_FAMILIES, family_for
 from n3rv.init.lockfile import load_lockfile
@@ -128,6 +129,100 @@ class Plan:
                 code |= PLAN_CODES["usage"]
         return code
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Plan":
+        if not isinstance(data, dict):
+            from n3rv.reconcile.planfile import PlanFileError
+
+            raise PlanFileError("plan file: expected a JSON object")
+
+        def _require(key: str, types: tuple[type, ...] | type, *, allow_none: bool = False) -> Any:
+            from n3rv.reconcile.planfile import PlanFileError
+
+            if key not in data:
+                raise PlanFileError(f"missing required key: {key}")
+            val = data[key]
+            if allow_none and val is None:
+                return val
+            if not isinstance(val, types):
+                raise PlanFileError(f"wrong type for key: {key}")
+            return val
+
+        state_sha = _require("state_sha", str)
+        n3rv_version = _require("n3rv_version", str)
+        templates_sha_v = _require("templates_sha", str)
+        env_hash_v = _require("env_hash", str)
+        _require("exit_code", int)
+        _require("empty", bool)
+        force_project_files = _require("force_project_files", bool)
+        global_config = _require("global_config", str, allow_none=True)
+        plan_hash_v = _require("plan_hash", str)
+        actions_raw = _require("actions", list)
+        findings_raw = _require("findings", list)
+
+        from n3rv.reconcile.planfile import PlanFileError
+
+        if not re.fullmatch(r"[0-9a-f]{64}", plan_hash_v):
+            raise PlanFileError("wrong type or format for key: plan_hash")
+
+        actions: list[Action] = []
+        action_keys = {"kind", "target", "strategy", "reason", "source", "current_sha", "desired_sha"}
+        for item in actions_raw:
+            if not isinstance(item, dict):
+                raise PlanFileError("wrong type for key: actions")
+            missing = [k for k in action_keys if k not in item]
+            if missing:
+                raise PlanFileError(f"missing required key: {missing[0]}")
+            kind_val = item["kind"]
+            if not isinstance(kind_val, str):
+                raise PlanFileError("wrong type for key: kind")
+            try:
+                kind = ActionKind(kind_val)
+            except ValueError as exc:
+                raise PlanFileError(f"bad action kind: {kind_val}") from exc
+            for k in ("target", "strategy", "reason"):
+                if not isinstance(item[k], str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            for k in ("source", "current_sha", "desired_sha"):
+                v = item[k]
+                if v is not None and not isinstance(v, str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            actions.append(
+                Action(
+                    kind=kind,
+                    target=item["target"],
+                    strategy=item["strategy"],
+                    reason=item["reason"],
+                    source=item["source"],
+                    current_sha=item["current_sha"],
+                    desired_sha=item["desired_sha"],
+                )
+            )
+
+        findings: list[Finding] = []
+        finding_keys = {"code", "level", "message"}
+        for item in findings_raw:
+            if not isinstance(item, dict):
+                raise PlanFileError("wrong type for key: findings")
+            missing = [k for k in finding_keys if k not in item]
+            if missing:
+                raise PlanFileError(f"missing required key: {missing[0]}")
+            for k in finding_keys:
+                if not isinstance(item[k], str):
+                    raise PlanFileError(f"wrong type for key: {k}")
+            findings.append(Finding(code=item["code"], level=item["level"], message=item["message"]))
+
+        return cls(
+            state_sha=state_sha,
+            n3rv_version=n3rv_version,
+            templates_sha=templates_sha_v,
+            env_hash=env_hash_v,
+            actions=tuple(actions),
+            findings=tuple(findings),
+            force_project_files=force_project_files,
+            global_config=global_config,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "plan_hash": self.plan_hash,
@@ -167,6 +262,7 @@ def templates_sha(templates_dir: Path) -> str:
 def env_hash(project_root: Path, n3rv_binary: str) -> str:
     payload = {"root": str(project_root), "binary": n3rv_binary}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
 
 
 def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:

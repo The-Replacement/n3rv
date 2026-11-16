@@ -330,3 +330,72 @@ def test_update_preserves_user_prose_outside_agents_md_markers(initialized_proje
     assert "## My Notes" in content
     assert "keep me around" in content
     assert "Language: English everywhere" in content
+
+
+class TestJsonKeyOwnership:
+    """managed.json_keys: per-key ownership for JSON_MERGE outputs (n3rv#14/#16)."""
+
+    def _entry(self, output_path: str = "opencode.json") -> UpdateEntry:
+        return UpdateEntry("opencode.json.j2", output_path, UpdateStrategy.JSON_MERGE)
+
+    def test_rename_converges_when_key_is_owned(self, tmp_path: Path) -> None:
+        """AC-1.1: owned key absent from render is deleted; new key present; no duplicate."""
+        import json
+
+        from n3rv.init.lockfile import save_managed_state
+        from n3rv.init.update import resolve_text
+
+        target = tmp_path / "opencode.json"
+        target.write_text(json.dumps({"command": "old", "user_key": "keep"}), encoding="utf-8")
+        save_managed_state(tmp_path, {"json_keys": {"opencode.json": {".": ["command"]}}})
+        rendered = json.dumps({"commands": {"sdd-new": {}}, "user_key": "keep"})
+
+        res = resolve_text(self._entry(), tmp_path, target, rendered)
+
+        assert res.error is None
+        data = json.loads(res.text or "")
+        assert "commands" in data
+        assert "command" not in data
+        assert data["user_key"] == "keep"
+        assert res.owned_keys == {".": ["commands", "user_key"]}
+        assert any("removed JSON key 'command'" in n for n in res.notes)
+
+    def test_user_key_survives_byte_identical(self, tmp_path: Path) -> None:
+        """AC-1.2: unowned on-disk key is preserved byte-identically."""
+        import json
+
+        from n3rv.init.lockfile import save_managed_state
+        from n3rv.init.update import resolve_text
+
+        target = tmp_path / "opencode.json"
+        target.write_text(
+            json.dumps({"default_agent": "n3rv", "user_extra": {"nested": [1, 2]}}),
+            encoding="utf-8",
+        )
+        save_managed_state(tmp_path, {"json_keys": {"opencode.json": {".": ["default_agent"]}}})
+        rendered = json.dumps({"default_agent": "n3rv"})
+
+        res = resolve_text(self._entry(), tmp_path, target, rendered)
+
+        data = json.loads(res.text or "")
+        assert data["user_extra"] == {"nested": [1, 2]}
+        assert data["default_agent"] == "n3rv"
+
+    def test_first_apply_deferral_preserves_stale_key_and_reports(self, tmp_path: Path) -> None:
+        """AC-1.3 / deferral: no prior record -> nothing deleted, unowned keys reported."""
+        import json
+
+        from n3rv.init.update import resolve_text
+
+        target = tmp_path / "opencode.json"
+        target.write_text(json.dumps({"command": "stale", "commands": {"x": 1}}), encoding="utf-8")
+        rendered = json.dumps({"commands": {"sdd-new": {}}})
+
+        res = resolve_text(self._entry(), tmp_path, target, rendered)
+
+        data = json.loads(res.text or "")
+        # deferral: stale "command" preserved (not in render, but no ownership record to delete it)
+        assert "command" in data
+        assert "commands" in data
+        assert any("preserved unowned JSON key 'command'" in n for n in res.notes)
+        assert res.owned_keys == {".": ["commands"]}

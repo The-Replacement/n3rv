@@ -8,11 +8,9 @@ from pathlib import Path
 
 import n3rv
 from n3rv.init.binary import resolve_n3rv_binary
-from n3rv.init.context import Stack
 from n3rv.init.update import run_update
 from n3rv.reconcile import state_from_tree
 from n3rv.reconcile.plan import build_plan
-from n3rv.reconcile.state import ProjectIdentity, ProjectState
 
 TEMPLATES = Path(n3rv.__file__).parent / "init" / "templates"
 BINARY = resolve_n3rv_binary() or "n3rv"
@@ -59,7 +57,9 @@ def validate_shape(data: dict) -> None:
 def test_plan_json_and_output_validate_shape(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
     run_update(tmp_path)
-    plan = build_plan(tmp_path, state_from_tree(tmp_path), templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+    plan = build_plan(
+        tmp_path, state_from_tree(tmp_path), templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+    )
     data = plan.to_dict()
     validate_shape(data)
     out = tmp_path / "plan.json"

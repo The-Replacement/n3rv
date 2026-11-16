@@ -9,12 +9,10 @@ import pytest
 
 import n3rv
 from n3rv.init.binary import resolve_n3rv_binary
-from n3rv.init.context import Stack
 from n3rv.init.update import run_update
 from n3rv.reconcile import state_from_tree
-from n3rv.reconcile.plan import build_plan, templates_sha
+from n3rv.reconcile.plan import build_plan
 from n3rv.reconcile.planfile import PlanFileError, PlanRejectedError, load_plan_file, validate_plan_file
-from n3rv.reconcile.state import ProjectIdentity, ProjectState
 
 TEMPLATES = Path(n3rv.__file__).parent / "init" / "templates"
 BINARY = resolve_n3rv_binary() or "n3rv"
@@ -100,6 +98,7 @@ class TestValidatePlanFile:
         tdir.mkdir()
         # copy templates and modify one
         import shutil
+
         shutil.copytree(TEMPLATES, tdir, dirs_exist_ok=True)
         any_j2 = next(tdir.rglob("*.j2"))
         any_j2.write_text(any_j2.read_text() + "\nchanged\n")
@@ -138,6 +137,7 @@ class TestValidatePlanFile:
         bad_state = _StateWithSha("0" * 64)
         tdir = tmp_path / "tmpl"
         import shutil
+
         shutil.copytree(TEMPLATES, tdir, dirs_exist_ok=True)
         any_j2 = next(tdir.rglob("*.j2"))
         any_j2.write_text(any_j2.read_text() + "\nchanged\n")
@@ -152,6 +152,7 @@ class TestValidatePlanFile:
         plan = _plan(root, state)
         tdir = tmp_path / "tmpl"
         import shutil
+
         shutil.copytree(TEMPLATES, tdir, dirs_exist_ok=True)
         any_j2 = next(tdir.rglob("*.j2"))
         any_j2.write_text(any_j2.read_text() + "\nchanged\n")
@@ -196,6 +197,7 @@ class TestApplyPlanFile:
 
     def test_refusal_writes_nothing(self, tmp_path: Path, capsys) -> None:
         import hashlib
+
         from n3rv.reconcile import load_state, save_state
         from n3rv.reconcile.apply import apply_plan_file
 
@@ -218,16 +220,17 @@ class TestApplyPlanFile:
         # mutate target so content drift (target mismatch)
         target.write_text("wrecked-again\n")
         before = snapshot(root)
-        lock_before = (root / ".n3rv/template-lock.json").read_bytes() if (root / ".n3rv/template-lock.json").exists() else None
+        lock_path = root / ".n3rv/template-lock.json"
+        lock_before = lock_path.read_bytes() if lock_path.exists() else None
         with pytest.raises(PlanRejectedError):
             apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
         assert snapshot(root) == before
-        lock_after = (root / ".n3rv/template-lock.json").read_bytes() if (root / ".n3rv/template-lock.json").exists() else None
+        lock_after = lock_path.read_bytes() if lock_path.exists() else None
         assert lock_after == lock_before
 
     def test_no_apply_resolved_plan_on_refusal(self, tmp_path: Path, capsys, monkeypatch) -> None:
-        from n3rv.reconcile import load_state, save_state
         import n3rv.reconcile.apply as apply_mod
+        from n3rv.reconcile import load_state, save_state
 
         root = _converged(tmp_path)
         capsys.readouterr()
@@ -249,7 +252,9 @@ class TestApplyPlanFile:
 
         monkeypatch.setattr(apply_mod, "apply_resolved_plan", spy)
         with pytest.raises(PlanRejectedError):
-            apply_mod.apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+            apply_mod.apply_plan_file(
+                root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+            )
         assert called["n"] == 0
 
     def test_plan_hash_backstop_on_flag_drift(self, tmp_path: Path, capsys) -> None:
@@ -271,13 +276,17 @@ class TestApplyPlanFile:
         pf_no = root / "plan_no.json"
         pf_no.write_text(json.dumps(plan_no.to_dict(), indent=2))
         # plan with force -> update
-        plan_yes = build_plan(root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY, force_project_files=True)
+        plan_yes = build_plan(
+            root, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY, force_project_files=True
+        )
         pf_yes = root / "plan_yes.json"
         pf_yes.write_text(json.dumps(plan_yes.to_dict(), indent=2))
         assert plan_no.plan_hash != plan_yes.plan_hash
 
         # apply forced plan converges (recorded flag wins)
-        result = apply_plan_file(root, state, plan_file=pf_yes, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        result = apply_plan_file(
+            root, state, plan_file=pf_yes, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+        )
         assert result.ok
 
         # plan_hash backstop: forge recorded hash while preconditions still match
@@ -290,7 +299,9 @@ class TestApplyPlanFile:
         forged = root / "plan_forged.json"
         forged.write_text(json.dumps(d, indent=2))
         with pytest.raises(PlanRejectedError) as exc:
-            apply_plan_file(root, state3, plan_file=forged, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+            apply_plan_file(
+                root, state3, plan_file=forged, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+            )
         assert exc.value.field == "plan_hash"
 
     def test_empty_plan_converges(self, tmp_path: Path, capsys) -> None:
@@ -305,6 +316,8 @@ class TestApplyPlanFile:
         assert plan.empty
         pf = root / "plan.json"
         pf.write_text(json.dumps(plan.to_dict(), indent=2))
-        result = apply_plan_file(root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY)
+        result = apply_plan_file(
+            root, state, plan_file=pf, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary=BINARY
+        )
         assert result.ok
         assert result.applied == []

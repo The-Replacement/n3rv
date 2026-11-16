@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-import re
 
 from n3rv.init import DECLARABLE_FAMILIES, family_for
 from n3rv.init.lockfile import load_lockfile
@@ -130,7 +130,7 @@ class Plan:
         return code
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Plan":
+    def from_dict(cls, data: dict[str, Any]) -> Plan:
         if not isinstance(data, dict):
             from n3rv.reconcile.planfile import PlanFileError
 

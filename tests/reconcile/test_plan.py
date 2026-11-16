@@ -367,14 +367,34 @@ class TestPlanFileFields:
         cases = [
             ("missing state_sha", {k: v for k, v in base.items() if k != "state_sha"}),
             ("wrong type for key: actions", {**base, "actions": "nope"}),
-            ("missing required key: kind", {**base, "actions": [{k: v for k, v in base["actions"][0].items() if k != "kind"}]}) if base["actions"] else None,
+            (
+                "missing required key: kind",
+                {**base, "actions": [{k: v for k, v in base["actions"][0].items() if k != "kind"}]},
+            )
+            if base["actions"]
+            else None,
             ("wrong type for key: findings", {**base, "findings": None}),
             ("wrong type or format for key: plan_hash", {**base, "plan_hash": "abc"}),
             ("wrong type for key: force_project_files", {**base, "force_project_files": "true"}),
         ]
         # ensure we have an action for kind-missing case
         if not base["actions"]:
-            cases[2] = ("missing required key: kind", {**base, "actions": [{"target": "x", "strategy": "s", "reason": "r", "source": None, "current_sha": None, "desired_sha": None}]})
+            cases[2] = (
+                "missing required key: kind",
+                {
+                    **base,
+                    "actions": [
+                        {
+                            "target": "x",
+                            "strategy": "s",
+                            "reason": "r",
+                            "source": None,
+                            "current_sha": None,
+                            "desired_sha": None,
+                        }
+                    ],
+                },
+            )
         for msg, data in cases:
             assert data is not None
             with pytest.raises(PlanFileError) as exc:
@@ -389,10 +409,17 @@ class TestPlanFileFields:
 
         state = ProjectState(project=ProjectIdentity(name="demo", stack=Stack.GENERIC))
         base = build_plan(tmp_path, state, templates_dir=TEMPLATES, n3rv_version="dev", n3rv_binary="n3rv").to_dict()
-        base["actions"] = [{
-            "kind": "bogus", "target": "x", "strategy": "s", "reason": "r",
-            "source": None, "current_sha": None, "desired_sha": None,
-        }]
+        base["actions"] = [
+            {
+                "kind": "bogus",
+                "target": "x",
+                "strategy": "s",
+                "reason": "r",
+                "source": None,
+                "current_sha": None,
+                "desired_sha": None,
+            }
+        ]
         with pytest.raises(PlanFileError) as exc:
             Plan.from_dict(base)
         assert "kind" in str(exc.value) or "bogus" in str(exc.value)
@@ -403,13 +430,12 @@ class TestCurrentShaNormalization:
         root = _converged(tmp_path)
         capsys.readouterr()
         target = root / ".opencode/agents/n3rv.md"
-        crlf = "hello\r\nworld\r\n".encode("utf-8")
+        crlf = b"hello\r\nworld\r\n"
         target.write_bytes(crlf)
         plan = _plan(root)
         actions = [a for a in plan.actions if a.target == ".opencode/agents/n3rv.md"]
         assert actions
         assert actions[0].current_sha == hashlib.sha256(crlf).hexdigest()
         # read_text normalization would differ on universal newlines decode/encode in some contexts
-        text_hash = hashlib.sha256(target.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
         # bytes hash must be authoritative; ensure it's computed from bytes
         assert actions[0].current_sha == hashlib.sha256(target.read_bytes()).hexdigest()

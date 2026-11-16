@@ -49,7 +49,8 @@ class TestFamilyCoverage:
             "spec-kit": 6,
             "runtime": 2,
             "hooks": 1,
-            ALWAYS_ON_FAMILY: 8,
+            "tooling": 6,
+            ALWAYS_ON_FAMILY: 2,
         }
 
     def test_both_manifests_are_covered(self) -> None:

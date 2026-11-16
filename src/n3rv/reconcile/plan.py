@@ -196,11 +196,19 @@ def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
                 continue
             wanted.add(output)
 
+    from n3rv.init import ALWAYS_ON_FAMILY, TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
     selected: list[UpdateEntry] = []
     for entry in FILE_UPDATE_MANIFEST:
         family = family_for(entry.output_path)
-        if family in DECLARABLE_FAMILIES:
+        if family == ALWAYS_ON_FAMILY:
+            selected.append(entry)
+        elif family in DECLARABLE_FAMILIES:
             if entry.output_path in wanted:
+                selected.append(entry)
+        elif family in tier_family_to_attr:
+            if getattr(state.tiers, tier_family_to_attr[family]):
                 selected.append(entry)
         else:
             selected.append(entry)
@@ -414,7 +422,8 @@ def resolve_actions(
             )
         )
 
-    actions.extend(_deletions(root, entries, lock_entries))
+    actions.extend(_deletions(root, entries, lock_entries, state.tiers))
+    findings.extend(_declined_tier_findings(root, entries, lock_entries, state.tiers))
 
     # Advisory: detection may report, never act.
     from n3rv.reconcile.divergence import detect_divergence
@@ -483,12 +492,17 @@ def _mark_inert(actions: list[Action], blocked: dict[str, str]) -> list[Action]:
     return marked
 
 
-def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any]) -> list[Action]:
+def _deletions(
+    root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any = None
+) -> list[Action]:
     """Files this generator wrote before and no longer selects.
 
     Only touched when the file still matches what was written: anything a human
     edited becomes a conflict, never a deletion.
     """
+    from n3rv.init import ALWAYS_ON_FAMILY, TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
     selected = {entry.output_path for entry in entries}
     removed: list[Action] = []
     for output_path, record in sorted(lock_entries.items()):
@@ -498,7 +512,15 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
             family = family_for(output_path)
         except Exception:
             continue
-        if family not in DECLARABLE_FAMILIES:
+        if family == ALWAYS_ON_FAMILY:
+            continue
+        if family in DECLARABLE_FAMILIES:
+            pass  # declarable absence is a decline
+        elif family in tier_family_to_attr and tiers is not None:
+            if getattr(tiers, tier_family_to_attr[family]):
+                continue  # tier enabled: absence not a decline
+            # tier declined: fall through to sha-guarded deletion
+        else:
             continue
         target = root / output_path
         if not target.exists():
@@ -522,3 +544,37 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
                 )
             )
     return removed
+
+
+def _declined_tier_findings(
+    root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any
+) -> list[Finding]:
+    """Warn about untracked files in declined tiers (not ours to delete)."""
+    from n3rv.init import TIER_FAMILIES
+
+    tier_family_to_attr = {v: k for k, v in TIER_FAMILIES.items()}
+    selected = {entry.output_path for entry in entries}
+    findings: list[Finding] = []
+    for entry in FILE_UPDATE_MANIFEST:
+        try:
+            family = family_for(entry.output_path)
+        except Exception:
+            continue
+        if family not in tier_family_to_attr:
+            continue
+        if getattr(tiers, tier_family_to_attr[family]):
+            continue
+        if entry.output_path in selected or entry.output_path in lock_entries:
+            continue
+        target = root / entry.output_path
+        if target.exists():
+            tier_name = tier_family_to_attr[family]
+            findings.append(
+                Finding(
+                    "tier_declined_untracked",
+                    "warn",
+                    f"{entry.output_path}: tier {tier_name} is declined but the file exists and is untracked; "
+                    "not deleting a file n3rv did not write",
+                )
+            )
+    return findings

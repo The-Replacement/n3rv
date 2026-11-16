@@ -11,7 +11,7 @@ from n3rv.init.context import Stack
 from n3rv.init.update import MARKER_START, run_update
 from n3rv.reconcile import state_from_tree
 from n3rv.reconcile.plan import PLAN_CODES, ActionKind, build_plan, env_hash, templates_sha
-from n3rv.reconcile.state import Components, Detection, ProjectIdentity, ProjectState, StructureState
+from n3rv.reconcile.state import Components, Detection, ProjectIdentity, ProjectState, StructureState, Tiers
 
 TEMPLATES = Path(n3rv.__file__).parent / "init" / "templates"
 
@@ -239,3 +239,72 @@ class TestEnvNeutralization:
         assert hub_actions and hub_actions[0].kind in {ActionKind.UPDATE, ActionKind.REGENERATE}
         env_findings = [f for f in plan.findings if f.code == "environment" and self.HUB in f.message]
         assert not env_findings
+
+
+class TestTierGating:
+    def test_minimal_tree_selects_only_floor_outputs(self, tmp_path: Path) -> None:
+        from n3rv.reconcile.plan import selected_entries
+
+        state = ProjectState(
+            project=ProjectIdentity(name="demo", stack=Stack.GENERIC),
+            tiers=Tiers(runtime=False, spec_kit=False, tooling=False),
+        )
+        entries, findings = selected_entries(state)
+        selected = {e.output_path for e in entries}
+        assert selected == {"AGENTS.md", "opencode.json"}
+        assert findings == []
+
+    def test_declined_tracked_tier_output_becomes_delete(self, tmp_path: Path) -> None:
+        import hashlib
+
+        from n3rv.init.lockfile import save_lockfile
+
+        # a tracked runtime file, unmodified, but tier declined
+        target = tmp_path / ".n3rv/a2a-config.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("content\n", encoding="utf-8")
+        sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        save_lockfile(tmp_path, {".n3rv/a2a-config.yaml": {"sha256": sha, "template": "x"}})
+
+        state = ProjectState(
+            project=ProjectIdentity(name="demo", stack=Stack.GENERIC),
+            tiers=Tiers(runtime=False, spec_kit=True, tooling=True),
+        )
+        plan = _plan(tmp_path, state)
+        actions = [a for a in plan.actions if a.target == ".n3rv/a2a-config.yaml"]
+        assert len(actions) == 1
+        assert actions[0].kind == ActionKind.DELETE
+
+    def test_declined_tracked_tier_output_edited_becomes_conflict(self, tmp_path: Path) -> None:
+        import hashlib
+
+        from n3rv.init.lockfile import save_lockfile
+
+        target = tmp_path / ".n3rv/a2a-config.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("edited by hand\n", encoding="utf-8")
+        sha = hashlib.sha256(b"original\n").hexdigest()
+        save_lockfile(tmp_path, {".n3rv/a2a-config.yaml": {"sha256": sha, "template": "x"}})
+
+        state = ProjectState(
+            project=ProjectIdentity(name="demo", stack=Stack.GENERIC),
+            tiers=Tiers(runtime=False, spec_kit=True, tooling=True),
+        )
+        plan = _plan(tmp_path, state)
+        actions = [a for a in plan.actions if a.target == ".n3rv/a2a-config.yaml"]
+        assert len(actions) == 1
+        assert actions[0].kind == ActionKind.CONFLICT
+
+    def test_declined_untracked_tier_output_on_disk_is_reported_not_deleted(self, tmp_path: Path) -> None:
+        target = tmp_path / ".n3rv/a2a-config.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("user file\n", encoding="utf-8")
+
+        state = ProjectState(
+            project=ProjectIdentity(name="demo", stack=Stack.GENERIC),
+            tiers=Tiers(runtime=False, spec_kit=True, tooling=True),
+        )
+        plan = _plan(tmp_path, state)
+        actions = [a for a in plan.actions if a.target == ".n3rv/a2a-config.yaml"]
+        assert actions == []
+        assert any(f.code == "tier_declined_untracked" for f in plan.findings)

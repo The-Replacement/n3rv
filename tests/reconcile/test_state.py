@@ -272,6 +272,7 @@ class TestRenderContext:
         ctx = self._ctx(tmp_path, _state())
         assert ctx["profile_mcp_servers"][0]["command"] == ["x"]
 
+
 class TestMigration:
     def test_v1_state_loads_as_v2_with_defaults(self, tmp_path: Path) -> None:
         """M1: v1 file upgrades in memory; pre-existing fields preserved, new fields defaulted."""
@@ -322,9 +323,7 @@ class TestMigration:
         """M2 property: detection preserved through upgrade; schema bumped to v2."""
         _write_state(
             tmp_path,
-            "schema: 1\n"
-            "project:\n  name: radio\n  stack: generic\n"
-            "detection:\n  structure:\n    has_src_dir: true\n",
+            "schema: 1\nproject:\n  name: radio\n  stack: generic\ndetection:\n  structure:\n    has_src_dir: true\n",
         )
         loaded = load_state(tmp_path)
         assert loaded.schema_version == 2
@@ -356,8 +355,6 @@ class TestRequiresPython:
         assert ctx["requires_python"] is None
 
     def test_state_from_tree_pins_requires_python(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\nrequires-python = ">=3.15"\n'
-        )
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nrequires-python = ">=3.15"\n')
         state = state_from_tree(tmp_path)
         assert state.detection.requires_python == ">=3.15"

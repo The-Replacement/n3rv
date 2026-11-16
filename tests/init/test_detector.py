@@ -210,9 +210,7 @@ class TestExtractRequiresPython:
     def test_reads_project_requires_python(self, tmp_path: Path):
         from n3rv.init.detector import _extract_requires_python
 
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\nrequires-python = ">=3.15"\n'
-        )
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nrequires-python = ">=3.15"\n')
         assert _extract_requires_python(tmp_path / "pyproject.toml") == ">=3.15"
 
     def test_returns_none_when_missing(self, tmp_path: Path):

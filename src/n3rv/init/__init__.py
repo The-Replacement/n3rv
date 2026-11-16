@@ -518,7 +518,6 @@ def family_for(output_path: str) -> str:
     raise UnknownFamilyError(f"no component family for generated output {output_path!r}")
 
 
-
 def run_init(
     root: Path,
     project_name: str | None,
@@ -699,6 +698,7 @@ def _record_generated_lockfile(
     managed: dict[str, Any] = {"mcp_servers": sorted(server.name for server in profile.mcp_servers)}
     # record json_keys for JSON_MERGE outputs that were written
     from n3rv.init.update import FILE_UPDATE_MANIFEST, UpdateStrategy
+
     json_outputs = {e.output_path for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.JSON_MERGE}
     owned_json_keys: dict[str, dict[str, list[str]]] = {}
     for _template_name, output_path in written:
@@ -709,6 +709,7 @@ def _record_generated_lockfile(
             continue
         try:
             import json as _json
+
             data = _json.loads(target.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 owned_json_keys[output_path] = {".": sorted(data.keys())}

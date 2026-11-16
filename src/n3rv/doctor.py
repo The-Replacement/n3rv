@@ -628,9 +628,7 @@ def run_doctor(
     except Exception:
         deployment_target = "mainframe"
     categories = [
-        check_drift(
-            root, run, repo=repo, mainframe_remote=mainframe_remote, deployment_target=deployment_target
-        ),
+        check_drift(root, run, repo=repo, mainframe_remote=mainframe_remote, deployment_target=deployment_target),
         check_models(root, run, templates_dir=templates_dir),
         check_mcp(root, run, global_config=global_config),
         check_convergence(root, templates_dir=templates_dir),

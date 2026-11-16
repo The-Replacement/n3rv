@@ -264,6 +264,9 @@ def env_hash(project_root: Path, n3rv_binary: str) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def file_sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
 
 def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
     """Entries the declared state asks for, plus any component it names in vain.
@@ -504,7 +507,7 @@ def resolve_actions(
                     entry.strategy.value,
                     reason,
                     entry.template_name,
-                    hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                    file_sha(target),
                     desired_sha,
                 )
             )
@@ -518,7 +521,7 @@ def resolve_actions(
                 entry.strategy.value,
                 "content differs from the declared state" if tracked else "untracked by the lockfile",
                 entry.template_name,
-                hashlib.sha256(current.encode("utf-8")).hexdigest(),
+                file_sha(target),
                 desired_sha,
             )
         )
@@ -626,7 +629,7 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
         target = root / output_path
         if not target.exists():
             continue
-        current_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        current_sha = file_sha(target)
         recorded = str((record or {}).get("sha256") or "")
         if recorded and recorded == current_sha:
             removed.append(

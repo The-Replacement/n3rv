@@ -47,8 +47,7 @@ def validate_plan_file(
     n3rv_version: str,
 ) -> None:
     """Sequential precondition gate; raises PlanRejectedError on first divergence."""
-    import hashlib
-    from n3rv.reconcile.plan import templates_sha
+    from n3rv.reconcile.plan import file_sha, templates_sha
 
     if state.sha256() != saved.state_sha:
         raise PlanRejectedError("state_sha", f"expected {saved.state_sha}, got {state.sha256()}")
@@ -63,6 +62,6 @@ def validate_plan_file(
         target = root / action.target
         if not target.exists():
             raise PlanRejectedError(action.target, "file is missing")
-        current = hashlib.sha256(target.read_bytes()).hexdigest()
+        current = file_sha(target)
         if current != action.current_sha:
             raise PlanRejectedError(action.target, f"expected {action.current_sha}, got {current}")

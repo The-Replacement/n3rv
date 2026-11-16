@@ -397,3 +397,19 @@ class TestPlanFileFields:
             Plan.from_dict(base)
         assert "kind" in str(exc.value) or "bogus" in str(exc.value)
 
+
+class TestCurrentShaNormalization:
+    def test_current_sha_uses_read_bytes(self, tmp_path: Path, capsys) -> None:
+        root = _converged(tmp_path)
+        capsys.readouterr()
+        target = root / ".opencode/agents/n3rv.md"
+        crlf = "hello\r\nworld\r\n".encode("utf-8")
+        target.write_bytes(crlf)
+        plan = _plan(root)
+        actions = [a for a in plan.actions if a.target == ".opencode/agents/n3rv.md"]
+        assert actions
+        assert actions[0].current_sha == hashlib.sha256(crlf).hexdigest()
+        # read_text normalization would differ on universal newlines decode/encode in some contexts
+        text_hash = hashlib.sha256(target.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        # bytes hash must be authoritative; ensure it's computed from bytes
+        assert actions[0].current_sha == hashlib.sha256(target.read_bytes()).hexdigest()

@@ -105,7 +105,7 @@ def apply_resolved_plan(
                 target.unlink()
             except OSError as exc:
                 result.error = f"could not delete {action.target}: {exc}"
-                _persist(root, state, entries)
+                _persist(root, state, entries, _collect_owned_json_keys(root, result, resolutions))
                 result.lockfile_entries = len(entries)
                 return result
             result.applied.append(AppliedAction(action.kind.value, action.target, "deleted"))
@@ -120,7 +120,7 @@ def apply_resolved_plan(
             _write_rendered(target, resolution.text)
         except OSError as exc:
             result.error = f"could not write {action.target}: {exc}"
-            _persist(root, state, entries)
+            _persist(root, state, entries, _collect_owned_json_keys(root, result, resolutions))
             result.lockfile_entries = len(entries)
             return result
 
@@ -135,15 +135,40 @@ def apply_resolved_plan(
         )
         result.applied.append(AppliedAction(action.kind.value, action.target, "written"))
 
-    _persist(root, state, entries)
+    _persist(root, state, entries, _collect_owned_json_keys(root, result, resolutions))
     result.lockfile_entries = len(entries)
     return result
 
 
-def _persist(root: Path, state: Any, entries: dict[str, Any]) -> None:
+def _collect_owned_json_keys(
+    root: Path, result: ApplyResult, resolutions: dict[str, Any]
+) -> dict[str, dict[str, list[str]]]:
+    """Accumulate json_keys for written JSON_MERGE outputs, preserving existing records."""
+    from n3rv.init.lockfile import load_managed_state
+    from n3rv.init.update import FILE_UPDATE_MANIFEST, UpdateStrategy
+
+    json_outputs = {e.output_path for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.JSON_MERGE}
+    owned = dict(load_managed_state(root).get("json_keys") or {})
+    for applied in result.applied:
+        if applied.target in json_outputs and applied.result == "written":
+            resolution = resolutions.get(applied.target)
+            if resolution is not None and getattr(resolution, "owned_keys", None) is not None:
+                owned[applied.target] = resolution.owned_keys
+    return owned
+
+
+def _persist(
+    root: Path,
+    state: Any,
+    entries: dict[str, Any],
+    owned_json_keys: dict[str, dict[str, list[str]]] | None = None,
+) -> None:
     """Save what actually landed. Never called with entries for failed writes."""
     save_lockfile(root, entries)
-    save_managed_state(root, {"mcp_servers": sorted(server.name for server in state.mcp.servers)})
+    managed: dict[str, Any] = {"mcp_servers": sorted(server.name for server in state.mcp.servers)}
+    if owned_json_keys:
+        managed["json_keys"] = owned_json_keys
+    save_managed_state(root, managed)
 
 
 def file_sha(path: Path) -> str:

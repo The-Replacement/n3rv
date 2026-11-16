@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Any
 
 from n3rv import board
 from n3rv.init.analyzer import analyze_project
@@ -697,4 +698,24 @@ def _record_generated_lockfile(
             managed_region=region,
         )
     save_lockfile(root, entries)
-    save_managed_state(root, {"mcp_servers": sorted(server.name for server in profile.mcp_servers)})
+    managed: dict[str, Any] = {"mcp_servers": sorted(server.name for server in profile.mcp_servers)}
+    # record json_keys for JSON_MERGE outputs that were written
+    from n3rv.init.update import FILE_UPDATE_MANIFEST, UpdateStrategy
+    json_outputs = {e.output_path for e in FILE_UPDATE_MANIFEST if e.strategy == UpdateStrategy.JSON_MERGE}
+    owned_json_keys: dict[str, dict[str, list[str]]] = {}
+    for _template_name, output_path in written:
+        if output_path not in json_outputs:
+            continue
+        target = root / output_path
+        if not target.is_file():
+            continue
+        try:
+            import json as _json
+            data = _json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                owned_json_keys[output_path] = {".": sorted(data.keys())}
+        except Exception:
+            pass
+    if owned_json_keys:
+        managed["json_keys"] = owned_json_keys
+    save_managed_state(root, managed)

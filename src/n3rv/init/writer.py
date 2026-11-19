@@ -119,7 +119,12 @@ def configure_git_hooks(root: Path) -> bool:
 GITIGNORE_SECTION_HEADER = "# N3RV — NEVER COMMIT (template-controlled)"
 
 GITIGNORE_PATTERNS: list[str] = [
-    ".n3rv/",
+    # Contents ignored, not the directory: git cannot re-include a file whose
+    # parent directory is excluded, and the declared state is committed on
+    # purpose — it is what a reviewer reads before the generator writes
+    # anything. Every project's .gitignore already documents this split.
+    ".n3rv/*",
+    "!.n3rv/state.yaml",
     ".opencode/",
     ".githooks/",
     ".specify/",
@@ -156,7 +161,10 @@ def configure_gitignore(root: Path) -> bool:
     gitignore = root / ".gitignore"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
 
-    if GITIGNORE_SECTION_HEADER in existing:
+    # A project that already spells out the same rules by hand must not get a
+    # second, possibly contradictory block: the file's own convention wins.
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    if GITIGNORE_SECTION_HEADER in existing or set(GITIGNORE_PATTERNS) <= existing_lines:
         return False
 
     block = _gitignore_block()

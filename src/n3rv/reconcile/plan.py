@@ -279,12 +279,7 @@ def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
 
     findings: list[Finding] = []
     known = manifest_components()
-    declared = {
-        "agents": state.components.agents,
-        "skills": state.components.skills,
-        "commands": state.components.commands,
-        "hooks": state.components.hooks,
-    }
+    declared = declared_components(state)
     wanted: set[str] = set()
     for family, names in declared.items():
         for name in names:
@@ -317,6 +312,22 @@ def selected_entries(state: Any) -> tuple[list[UpdateEntry], list[Finding]]:
         else:
             selected.append(entry)
     return selected, findings
+
+
+def declared_components(state: Any) -> dict[str, set[str]]:
+    """Component names the state declares, grouped by declarable family.
+
+    Deletion decisions need this: a lockfile path that no manifest entry selects
+    is only a *decline* if the state does not name it. ``init`` ships outputs
+    (spec-kit) that ``update`` does not manage, so those paths are never
+    selected and must not be mistaken for components the project dropped.
+    """
+    return {
+        "agents": set(state.components.agents),
+        "skills": set(state.components.skills),
+        "commands": set(state.components.commands),
+        "hooks": set(state.components.hooks),
+    }
 
 
 def _name(family: str, output_path: str) -> str:
@@ -526,7 +537,7 @@ def resolve_actions(
             )
         )
 
-    actions.extend(_deletions(root, entries, lock_entries, state.tiers))
+    actions.extend(_deletions(root, entries, lock_entries, state.tiers, declared_components(state)))
     findings.extend(_declined_tier_findings(root, entries, lock_entries, state.tiers))
 
     # Advisory: detection may report, never act.
@@ -598,11 +609,21 @@ def _mark_inert(actions: list[Action], blocked: dict[str, str]) -> list[Action]:
     return marked
 
 
-def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, Any], tiers: Any = None) -> list[Action]:
+def _deletions(
+    root: Path,
+    entries: list[UpdateEntry],
+    lock_entries: dict[str, Any],
+    tiers: Any = None,
+    declared: dict[str, set[str]] | None = None,
+) -> list[Action]:
     """Files this generator wrote before and no longer selects.
 
     Only touched when the file still matches what was written: anything a human
     edited becomes a conflict, never a deletion.
+
+    "No longer selects" means the state stopped naming it, not merely that the
+    update manifest has no entry for it: ``init`` ships outputs (spec-kit) that
+    ``update`` never manages, and those are never selected by construction.
     """
     from n3rv.init import ALWAYS_ON_FAMILY, TIER_FAMILIES
 
@@ -619,7 +640,8 @@ def _deletions(root: Path, entries: list[UpdateEntry], lock_entries: dict[str, A
         if family == ALWAYS_ON_FAMILY:
             continue
         if family in DECLARABLE_FAMILIES:
-            pass  # declarable absence is a decline
+            if declared is not None and _name(family, output_path) in declared.get(family, set()):
+                continue  # still declared, just not selectable by the update manifest
         elif family in tier_family_to_attr and tiers is not None:
             if getattr(tiers, tier_family_to_attr[family]):
                 continue  # tier enabled: absence not a decline

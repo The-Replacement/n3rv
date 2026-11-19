@@ -381,8 +381,8 @@ class TestJsonKeyOwnership:
         assert data["user_extra"] == {"nested": [1, 2]}
         assert data["default_agent"] == "n3rv"
 
-    def test_first_apply_deferral_preserves_stale_key_and_reports(self, tmp_path: Path) -> None:
-        """AC-1.3 / deferral: no prior record -> nothing deleted, unowned keys reported."""
+    def test_first_apply_retires_legacy_renamed_key(self, tmp_path: Path) -> None:
+        """AC-1.3: a known V1 key converges in one apply even without a prior record."""
         import json
 
         from n3rv.init.update import resolve_text
@@ -394,8 +394,49 @@ class TestJsonKeyOwnership:
         res = resolve_text(self._entry(), tmp_path, target, rendered)
 
         data = json.loads(res.text or "")
-        # deferral: stale "command" preserved (not in render, but no ownership record to delete it)
-        assert "command" in data
+        assert "command" not in data
         assert "commands" in data
-        assert any("preserved unowned JSON key 'command'" in n for n in res.notes)
+        assert any("removed JSON key 'command'" in n for n in res.notes)
         assert res.owned_keys == {".": ["commands"]}
+
+    def test_first_apply_still_preserves_unknown_unowned_key(self, tmp_path: Path) -> None:
+        """Deferral: an unknown, unowned key is preserved and reported, never deleted."""
+        import json
+
+        from n3rv.init.update import resolve_text
+
+        target = tmp_path / "opencode.json"
+        target.write_text(json.dumps({"custom_key": 1, "commands": {"x": 1}}), encoding="utf-8")
+        rendered = json.dumps({"commands": {"sdd-new": {}}})
+
+        res = resolve_text(self._entry(), tmp_path, target, rendered)
+
+        data = json.loads(res.text or "")
+        assert data["custom_key"] == 1
+        assert any("preserved unowned JSON key 'custom_key'" in n for n in res.notes)
+
+    def test_legacy_key_kept_when_replacement_not_rendered(self, tmp_path: Path) -> None:
+        """A legacy-named key is only retired when its replacement is rendered."""
+        import json
+
+        from n3rv.init.update import resolve_text
+
+        target = tmp_path / "opencode.json"
+        target.write_text(json.dumps({"tools": {"bash": True}, "commands": {"x": 1}}), encoding="utf-8")
+        rendered = json.dumps({"commands": {"sdd-new": {}}})  # no permissions
+
+        res = resolve_text(self._entry(), tmp_path, target, rendered)
+
+        data = json.loads(res.text or "")
+        assert data["tools"] == {"bash": True}
+        assert any("preserved unowned JSON key 'tools'" in n for n in res.notes)
+
+    def test_legacy_rename_map_covers_v1_shapes(self) -> None:
+        """The map retires exactly the singular V1 root keys n3rv renamed."""
+        from n3rv.init.update import LEGACY_ROOT_RENAMES
+
+        assert LEGACY_ROOT_RENAMES == {
+            "command": "commands",
+            "tools": "permissions",
+            "agent": "agents",
+        }

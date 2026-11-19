@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
 from unittest.mock import patch
@@ -224,16 +225,22 @@ class TestInstallRuleset:
 class TestCli:
     runner = CliRunner()
 
+    @staticmethod
+    def _plain(text: str) -> str:
+        """Strip ANSI: rich splits flags as ``-\\x1b[0m\\x1b[1;36m-dry-run``."""
+        return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
+
     def test_ruleset_in_org_help(self) -> None:
         result = self.runner.invoke(app, ["org", "--help"])
         assert result.exit_code == 0
-        assert "ruleset" in result.stdout
+        assert "ruleset" in self._plain(result.stdout)
 
     def test_ruleset_help_documents_options(self) -> None:
         result = self.runner.invoke(app, ["org", "ruleset", "--help"])
         assert result.exit_code == 0
-        assert "--dry-run" in result.stdout
-        assert "--name" in result.stdout
+        out = self._plain(result.stdout)
+        assert "--dry-run" in out
+        assert "--name" in out
 
     def test_exit_code_follows_install_result(self) -> None:
         with patch("n3rv.cli_org.install_ruleset", return_value=False), patch("builtins.print"):

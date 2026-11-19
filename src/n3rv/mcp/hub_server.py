@@ -11,6 +11,7 @@ from pathlib import Path
 
 from n3rv.mcp.shared import (
     build_mcp_server,
+    detect_agent_id,
     detect_agent_source,
     hub_rpc,
     resolve_runtime_settings,
@@ -29,7 +30,7 @@ _rpc = hub_rpc
 
 
 def _resolve_agent_ids(agent_id: str | None = None) -> list[str]:
-    resolved = (agent_id or detect_agent_source()).strip().lower()
+    resolved = (agent_id or detect_agent_id()).strip().lower()
     if not resolved:
         raise ValueError("agent_id is required when N3RV_AGENT_SOURCE is not set")
     return list(dict.fromkeys(_AGENT_ID_ALIASES.get(resolved, (resolved,))))
@@ -75,17 +76,19 @@ def build_hub_server(project_root: Path | None = None):
         skill_id: str,
         description: str,
         requesting_agent: str = "unknown",
+        target_agent: str | None = None,
     ) -> dict:
-        result = _rpc(
-            hub_url,
-            "tasks/send",
-            {
-                "skill_id": skill_id,
-                "description": description,
-                "requesting_agent": requesting_agent,
-                "metadata": {"auto_complete": False},
-            },
-        )
+        params: dict = {
+            "skill_id": skill_id,
+            "description": description,
+            "requesting_agent": requesting_agent,
+            "metadata": {"auto_complete": False},
+        }
+        if target_agent:
+            # Explicit cross-session handoff: route straight to the named id
+            # instead of by skill. The task stays submitted until it claims.
+            params["target_agent"] = target_agent
+        result = _rpc(hub_url, "tasks/send", params)
         logger.info(
             "delegate_task skill=%s from=%s -> task=%s",
             skill_id,
@@ -126,11 +129,25 @@ def build_hub_server(project_root: Path | None = None):
 
     @server.tool(
         description=(
-            "Mark a task as completed after executing it. "
-            "Provide the task_id from check_pending_tasks or list_pending_tasks and a result summary."
+            "Claim a task assigned to this agent (submitted -> working). "
+            "Call it before complete_task so started_at reflects a real start."
         )
     )
-    async def complete_task(task_id: str, result: str, completing_agent: str = "unknown") -> dict:
+    async def claim_task(task_id: str) -> dict:
+        agent_id = detect_agent_id()
+        out = _rpc(hub_url, "tasks/claim", {"task_id": task_id, "agent_id": agent_id})
+        logger.info("claim_task id=%s by=%s", task_id, agent_id)
+        return result_payload(out)
+
+    @server.tool(
+        description=(
+            "Mark a task as completed after executing it. "
+            "Provide the task_id from check_pending_tasks or list_pending_tasks and a result summary. "
+            "The completing identity is derived from N3RV_AGENT_ID/N3RV_AGENT_SOURCE, not supplied by the caller."
+        )
+    )
+    async def complete_task(task_id: str, result: str) -> dict:
+        completing_agent = detect_agent_id()
         out = _rpc(
             hub_url,
             "tasks/complete",

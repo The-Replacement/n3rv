@@ -5,7 +5,7 @@ N3RV exposes **four** MCP servers — **31 tools** total — for agent integrati
 | Server | Tools | Command |
 |--------|-------|---------|
 | Memory | 12 | `n3rv-memory` |
-| Hub | 5 | `n3rv-hub` |
+| Hub | 6 | `n3rv-hub` |
 | Exec | 8 | `n3rv-exec` |
 | Code Graph | 6 | `n3rv-code-graph` |
 
@@ -177,15 +177,16 @@ Exposed by `src/n3rv/mcp/hub_server.py`. Provides A2A task delegation via the lo
 
 ### `delegate_task`
 
-Delegate a task to another agent via the A2A hub. The task stays assigned until the delegated agent calls `complete_task`.
+Delegate a task to another agent via the A2A hub. The task is created `submitted` and stays that way until the delegated agent claims it with `claim_task`; it is not `working` just because it was routed.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `skill_id` | string | Yes | Must match a registered agent skill (e.g. `sdd-design`, `review`, `implementation`) |
+| `skill_id` | string | Yes | Must match a registered agent skill (e.g. `sdd-design`, `review`, `implementation`); ignored for routing when `target_agent` is set |
 | `description` | string | Yes | Task description |
 | `requesting_agent` | string | No | Agent source (default: `unknown`, usually `N3RV_AGENT_SOURCE`) |
+| `target_agent` | string | No | Explicit handoff: assign this agent id (from its `N3RV_AGENT_ID`) instead of routing by skill |
 
-Returns: Task object with `id`, `status`, `assigned_agent`.
+Returns: Task object with `id`, `status`, `assigned_agent`. State is `submitted` until claimed.
 
 ---
 
@@ -195,7 +196,7 @@ List tasks assigned to an agent that are not yet completed.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | No | Agent ID (defaults to `N3RV_AGENT_SOURCE`) |
+| `agent_id` | string | No | Agent ID (defaults to `N3RV_AGENT_ID`, falling back to `N3RV_AGENT_SOURCE`) |
 
 Returns: List of task objects.
 
@@ -207,23 +208,34 @@ Check pending tasks assigned to the current agent (alias for `list_pending_tasks
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agent_id` | string | No | Agent ID (defaults to `N3RV_AGENT_SOURCE`) |
+| `agent_id` | string | No | Agent ID (defaults to `N3RV_AGENT_ID`, falling back to `N3RV_AGENT_SOURCE`) |
 
 Returns: List of task objects.
 
 ---
 
+### `claim_task`
+
+Claim a task assigned to this agent, moving it `submitted → working` and recording `started_at`. Call it before doing the work so state reflects a real start, not routing.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `task_id` | string | Yes | Task ID from `check_pending_tasks` or a delegation |
+
+Returns: Updated task object. Claiming a task assigned to another agent returns an error naming the assignee.
+
+---
+
 ### `complete_task`
 
-Mark a task as completed after executing it.
+Mark a task as completed after executing it. The completing identity is derived from `N3RV_AGENT_ID` / `N3RV_AGENT_SOURCE`; it is **not** a tool parameter.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `task_id` | string | Yes | Task ID from `check_pending_tasks` |
 | `result` | string | Yes | Result summary |
-| `completing_agent` | string | No | Agent completing (default: `unknown`) |
 
-Returns: Updated task object.
+Returns: Updated task object. Completing a task assigned to another agent returns an error naming the assignee.
 
 ---
 

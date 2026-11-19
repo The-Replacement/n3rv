@@ -74,6 +74,11 @@ class A2AHub:
         working_count = 0
         for task in non_terminal_tasks:
             if task.state == TaskState.SUBMITTED:
+                # A routed-but-unclaimed task already has its assignee (explicit
+                # target_agent or a prior route). Rerouting would reassign it and
+                # could double-dispatch (n3rv#34).
+                if str(task.assigned_agent).strip().lower() not in ("", "pending"):
+                    continue
                 try:
                     await self._route_task(
                         task_id=task.id,
@@ -176,6 +181,8 @@ class A2AHub:
                 result = await self.tasks_cancel(params)
             elif method == "tasks/list":
                 result = await self.tasks_list(params)
+            elif method == "tasks/claim":
+                result = await self.tasks_claim(params)
             elif method == "tasks/complete":
                 result = await self.tasks_complete(params)
             else:
@@ -229,21 +236,41 @@ class A2AHub:
         )
         logger.debug("task created id=%s", task.id)
 
+        target_agent = params.get("target_agent")
         try:
-            task, decision = await self._route_task(
-                task_id=task.id,
-                skill_id=skill_id,
-                description=description,
-                requesting_agent=requesting_agent,
-            )
-            if metadata.get("auto_complete", False):
-                task = await self._auto_complete_task(
-                    task=task,
-                    decision=decision,
-                    requesting_agent=requesting_agent,
-                    description=description,
+            decision = None
+            if target_agent:
+                # Explicit handoff: assign the named agent and leave the task
+                # SUBMITTED for it to claim. No skill routing when the caller
+                # already named the target (n3rv#34).
+                task = self.state.update_task(
+                    task.id,
+                    assigned_agent=str(target_agent).strip().lower(),
+                    target_skill=skill_id or "implementation",
+                    metadata={**task.metadata, "routed_at": datetime.now(UTC).isoformat()},
                 )
-                logger.info("task=%s completed -> %s", task.id, decision.card.name)
+            else:
+                task, decision = await self._route_task(
+                    task_id=task.id,
+                    skill_id=skill_id,
+                    description=description,
+                    requesting_agent=requesting_agent,
+                )
+            if metadata.get("auto_complete", False):
+                if decision is not None:
+                    task = await self._auto_complete_task(
+                        task=task,
+                        decision=decision,
+                        requesting_agent=requesting_agent,
+                        description=description,
+                    )
+                    logger.info("task=%s completed -> %s", task.id, decision.card.name)
+                else:
+                    task = self.state.update_task(
+                        task.id,
+                        state=TaskState.COMPLETED,
+                        metadata={**task.metadata, "completed_at": datetime.now(UTC).isoformat()},
+                    )
         except Exception as exc:
             task = self._handle_task_exception(task.id, exc)
 
@@ -310,13 +337,15 @@ class A2AHub:
             len(decision.context),
         )
         task = self._load_task_or_fail(task_id)
+        # Routing assigns an agent but does not start work: the task stays
+        # SUBMITTED until the assignee claims it (tasks/claim). started_at is a
+        # claim fact, not a routing fact (n3rv#34).
         updated_task = self.state.update_task(
             task_id,
-            state=TaskState.WORKING,
             assigned_agent=decision.agent_id,
             target_skill=decision.skill.id,
             context=decision.context,
-            metadata={**task.metadata, "started_at": task.updated_at.isoformat()},
+            metadata={**task.metadata, "routed_at": datetime.now(UTC).isoformat()},
         )
         return updated_task, decision
 
@@ -386,14 +415,22 @@ class A2AHub:
         task_id = str(params["task_id"])
         task = self._load_task_or_fail(task_id)
         # OWASP: validate agent can only cancel own tasks or hub tasks
-        requesting_agent = str(params.get("requesting_agent", "unknown"))
-        if requesting_agent != task.assigned_agent and requesting_agent != "hub":
+        requesting_agent = str(params.get("requesting_agent", "unknown")).strip().lower()
+        assignee = str(task.assigned_agent).strip().lower()
+        requester = str(task.requesting_agent).strip().lower()
+        if requesting_agent not in {assignee, requester, "hub"}:
             logger.warning(
-                "Unauthorized cancel: agent=%s task.assigned=%s",
+                "Unauthorized cancel: agent=%s task.assigned=%s task.requested=%s",
                 requesting_agent,
                 task.assigned_agent,
+                task.requesting_agent,
             )
-            raise web.HTTPForbidden(text="Agent can only cancel own tasks")
+            raise web.HTTPForbidden(
+                text=(
+                    f"task {task_id} is assigned to {assignee!r} and requested by "
+                    f"{requester!r}; {requesting_agent!r} cannot cancel it"
+                )
+            )
         if task.state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED}:
             return task.to_jsonrpc_result()
         updated = self.state.update_task(
@@ -423,20 +460,52 @@ class A2AHub:
         )
         return {"tasks": [t.to_jsonrpc_result() for t in tasks]}
 
+    async def tasks_claim(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Claim a routed task: SUBMITTED -> WORKING for the assignee.
+
+        WORKING + started_at mean an agent actually picked the task up, not that
+        the router filed it (n3rv#34).
+        """
+        task_id = str(params["task_id"])
+        agent_id = str(params.get("agent_id", "unknown")).strip().lower()
+        task = self._load_task_or_fail(task_id)
+        assignee = str(task.assigned_agent).strip().lower()
+        if agent_id != assignee and agent_id != "hub":
+            logger.warning(
+                "Unauthorized claim: agent=%s task.assigned=%s",
+                agent_id,
+                task.assigned_agent,
+            )
+            raise web.HTTPForbidden(text=f"task {task_id} is assigned to {assignee!r}; {agent_id!r} cannot claim it")
+        if task.state in {TaskState.WORKING, TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED}:
+            return task.to_jsonrpc_result()
+        updated = self.state.update_task(
+            task_id,
+            state=TaskState.WORKING,
+            metadata={**task.metadata, "started_at": datetime.now(UTC).isoformat()},
+        )
+        logger.info("task=%s claimed by agent=%s", task_id, agent_id)
+        return updated.to_jsonrpc_result()
+
     async def tasks_complete(self, params: dict[str, Any]) -> dict[str, Any]:
         """Mark task as COMPLETED with result text and artifact."""
         task_id = str(params["task_id"])
         result_text = str(params.get("result", "Task completed"))
-        completing_agent = str(params.get("completing_agent", "unknown"))
+        completing_agent = str(params.get("completing_agent", "unknown")).strip().lower()
         task = self._load_task_or_fail(task_id)
-        # OWASP: validate agent can only complete own tasks or hub tasks
-        if completing_agent != task.assigned_agent and completing_agent != "hub":
+        # Advisory identity: the hub is localhost and unauthenticated. The MCP
+        # layer derives this from N3RV_AGENT_ID/N3RV_AGENT_SOURCE; a direct RPC
+        # caller can still claim any id. Name the assignee so the error is useful.
+        assignee = str(task.assigned_agent).strip().lower()
+        if completing_agent != assignee and completing_agent != "hub":
             logger.warning(
                 "Unauthorized complete: agent=%s task.assigned=%s",
                 completing_agent,
                 task.assigned_agent,
             )
-            raise web.HTTPForbidden(text="Agent can only complete own tasks")
+            raise web.HTTPForbidden(
+                text=f"task {task_id} is assigned to {assignee!r}; {completing_agent!r} cannot complete it"
+            )
         if task.state in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED}:
             return task.to_jsonrpc_result()
         artifact = DelegationArtifact(

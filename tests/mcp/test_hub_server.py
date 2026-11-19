@@ -57,3 +57,25 @@ def test_list_pending_tasks_filters_terminal_states_and_deduplicates(
     tasks = hub_server._list_pending_tasks("http://hub", "opencode")
 
     assert [task["id"] for task in tasks] == ["task-1"]
+
+
+def test_detect_agent_id_prefers_override(monkeypatch) -> None:
+    monkeypatch.setenv("N3RV_AGENT_SOURCE", "opencode")
+    monkeypatch.setenv("N3RV_AGENT_ID", "radio-session")
+
+    assert hub_server.detect_agent_id() == "radio-session"
+    assert hub_server._resolve_agent_ids() == ["radio-session"]
+
+
+def test_detect_agent_id_falls_back_to_source(monkeypatch) -> None:
+    monkeypatch.setenv("N3RV_AGENT_SOURCE", "opencode")
+    monkeypatch.delenv("N3RV_AGENT_ID", raising=False)
+
+    assert hub_server.detect_agent_id() == "opencode"
+
+
+def test_detect_agent_id_ignores_blank_override(monkeypatch) -> None:
+    monkeypatch.setenv("N3RV_AGENT_SOURCE", "opencode")
+    monkeypatch.setenv("N3RV_AGENT_ID", "   ")
+
+    assert hub_server.detect_agent_id() == "opencode"

@@ -8,6 +8,7 @@ from pathlib import Path
 import n3rv
 from n3rv.init.binary import resolve_n3rv_binary
 from n3rv.init.context import Stack
+from n3rv.init.lockfile import load_lockfile, save_lockfile
 from n3rv.init.update import MARKER_START, run_update
 from n3rv.reconcile import state_from_tree
 from n3rv.reconcile.plan import PLAN_CODES, ActionKind, build_plan, env_hash, templates_sha
@@ -439,3 +440,52 @@ class TestCurrentShaNormalization:
         # read_text normalization would differ on universal newlines decode/encode in some contexts
         # bytes hash must be authoritative; ensure it's computed from bytes
         assert actions[0].current_sha == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+class TestInitOnlyOutputs:
+    """init ships spec-kit; update never manages it (n3rv#25).
+
+    A lockfile path the update manifest cannot select is therefore not evidence
+    that the project declined it, and convergence must leave it alone while the
+    state still declares it.
+    """
+
+    INIT_ONLY = ".opencode/skills/sdd-spec-kit-spec/SKILL.md"
+
+    @staticmethod
+    def _tree_with_init_only_output(tmp_path: Path) -> Path:
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n')
+        run_update(tmp_path)
+        target = tmp_path / TestInitOnlyOutputs.INIT_ONLY
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# spec-kit canonical spec skill\n", encoding="utf-8")
+        entries = dict(load_lockfile(tmp_path).get("entries") or {})
+        entries[TestInitOnlyOutputs.INIT_ONLY] = {
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "template": "opencode/skills/sdd-spec-kit-spec/SKILL.md.j2",
+        }
+        save_lockfile(tmp_path, entries)
+        return tmp_path
+
+    def test_declared_init_only_output_is_not_deleted(self, tmp_path: Path, capsys) -> None:
+        root = self._tree_with_init_only_output(tmp_path)
+        capsys.readouterr()
+        state = state_from_tree(root)
+        assert "sdd-spec-kit-spec" in state.components.skills
+
+        plan = _plan(root, state)
+
+        assert not [a for a in plan.actions if a.target == self.INIT_ONLY]
+
+    def test_undeclared_init_only_output_is_deleted(self, tmp_path: Path, capsys) -> None:
+        root = self._tree_with_init_only_output(tmp_path)
+        capsys.readouterr()
+        state = state_from_tree(root)
+        trimmed = [s for s in state.components.skills if s != "sdd-spec-kit-spec"]
+        state = state.model_copy(update={"components": state.components.model_copy(update={"skills": trimmed})})
+
+        plan = _plan(root, state)
+
+        actions = [a for a in plan.actions if a.target == self.INIT_ONLY]
+        assert len(actions) == 1
+        assert actions[0].kind == ActionKind.DELETE

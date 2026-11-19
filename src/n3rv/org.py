@@ -218,6 +218,189 @@ def protect_repo(repo_url: str, dry_run: bool = False) -> bool:
         return False
 
 
+DEFAULT_RULESET_NAME = "protect-default"
+
+
+class RulesetError(Exception):
+    """Raised when a ruleset cannot be derived from observable repository state."""
+
+
+def _parse_owner_repo(repo: object) -> str:
+    """Return ``owner/name`` from a GitHub URL, an scp-style remote or a bare slug."""
+    raw = str(repo).strip().rstrip("/")
+    if "github.com/" in raw:
+        raw = raw.split("github.com/")[-1]
+    elif "github.com:" in raw:
+        raw = raw.split("github.com:")[-1]
+    raw = raw.removesuffix(".git")
+    parts = raw.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise RulesetError(f"Cannot parse repository {repo!r}; expected owner/name or a GitHub URL")
+    return raw
+
+
+def _gh_json(*args: str) -> object:
+    """Run ``gh api <args>`` and decode stdout; any failure is a RulesetError."""
+    import json
+    import subprocess
+
+    result = subprocess.run(["gh", "api", *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RulesetError(f"gh api {args[0]} failed: {result.stderr.strip() or f'exit {result.returncode}'}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RulesetError(f"gh api {args[0]} returned non-JSON output") from exc
+
+
+def default_branch(owner_repo: str) -> str:
+    """Return the repository's GitHub default branch."""
+    data = _gh_json(f"repos/{owner_repo}")
+    branch = data.get("default_branch") if isinstance(data, dict) else None
+    if not isinstance(branch, str) or not branch:
+        raise RulesetError(f"{owner_repo}: GitHub did not report a default branch")
+    return branch
+
+
+def ci_check_contexts(owner_repo: str, branch: str) -> list[str]:
+    """Return the check names GitHub actually reports for the branch head.
+
+    Read from check runs, never from the workflow YAML: a matrix job publishes one
+    context per leg (``Test (Python 3.12)``) and a renamed job publishes its name,
+    so parsing the file invents contexts that never report and the ruleset then
+    requires nothing that exists.
+    """
+    data = _gh_json(f"repos/{owner_repo}/commits/{branch}/check-runs?per_page=100")
+    runs = data.get("check_runs", []) if isinstance(data, dict) else []
+    names = sorted(
+        {run["name"] for run in runs if isinstance(run, dict) and isinstance(run.get("name"), str) and run["name"]}
+    )
+    if not names:
+        raise RulesetError(
+            f"{owner_repo}@{branch}: no check runs to require; a ruleset that requires nothing gates nothing"
+        )
+    return names
+
+
+def build_ruleset_payload(name: str, contexts: list[str]) -> dict[str, object]:
+    """Build the ruleset body: default-branch protection with the repo's own checks."""
+    return {
+        "name": name,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "bypass_actors": [],
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": 0,
+                    "dismiss_stale_reviews_on_push": True,
+                    "require_code_owner_review": False,
+                    "require_last_push_approval": False,
+                    "required_review_thread_resolution": False,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": True,
+                    "do_not_enforce_on_create": False,
+                    "required_status_checks": [{"context": context} for context in contexts],
+                },
+            },
+        ],
+    }
+
+
+def _ruleset_required_contexts(ruleset: dict[str, object]) -> list[str]:
+    """Return the status-check contexts a ruleset requires, sorted."""
+    rules = ruleset.get("rules")
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        parameters = rule.get("parameters")
+        checks = parameters.get("required_status_checks") if isinstance(parameters, dict) else None
+        contexts = [c.get("context") for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
+        return sorted(context for context in contexts if isinstance(context, str))
+    return []
+
+
+def _find_ruleset(owner_repo: str, name: str) -> dict[str, object] | None:
+    """Return the named ruleset with its full detail, or None."""
+    listed = _gh_json(f"repos/{owner_repo}/rulesets")
+    for entry in listed if isinstance(listed, list) else []:
+        if isinstance(entry, dict) and entry.get("name") == name:
+            detail = _gh_json(f"repos/{owner_repo}/rulesets/{entry.get('id')}")
+            return detail if isinstance(detail, dict) else None
+    return None
+
+
+def install_ruleset(repo: object, name: str = DEFAULT_RULESET_NAME, dry_run: bool = False) -> bool:
+    """Install or update a default-branch ruleset that requires the repo's real CI checks.
+
+    Idempotent by name: an existing ruleset already active with the same contexts
+    is reported unchanged and not written. Repositories with no observable check
+    runs are refused rather than protected by an empty requirement.
+
+    Args:
+        repo: ``owner/name``, a GitHub URL, or an scp-style remote.
+        name: Ruleset name; the identity used for the idempotent lookup.
+        dry_run: Print the resolved payload without calling the write API.
+
+    Returns:
+        True when the ruleset is (or already was) active, False otherwise.
+    """
+    import json
+    import subprocess
+
+    try:
+        owner_repo = _parse_owner_repo(repo)
+        branch = default_branch(owner_repo)
+        contexts = ci_check_contexts(owner_repo, branch)
+    except RulesetError as exc:
+        print(f"  ✗ {exc}")
+        return False
+
+    payload = build_ruleset_payload(name=name, contexts=contexts)
+
+    if dry_run:
+        print(f"  → {owner_repo}: would install ruleset {name!r} on {branch} with checks={contexts}")
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return True
+
+    try:
+        existing = _find_ruleset(owner_repo, name)
+    except RulesetError as exc:
+        print(f"  ✗ {exc}")
+        return False
+
+    if existing is not None:
+        have = _ruleset_required_contexts(existing)
+        if existing.get("enforcement") == "active" and have == contexts:
+            print(f"  = {owner_repo}: ruleset {name!r} already active with checks={have}")
+            return True
+        url = f"repos/{owner_repo}/rulesets/{existing.get('id')}"
+        verb = "updated"
+    else:
+        url = f"repos/{owner_repo}/rulesets"
+        verb = "installed"
+
+    result = subprocess.run(
+        ["gh", "api", url, "--method", "PUT" if existing is not None else "POST", "--input", "-"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  ✗ {owner_repo}: ruleset {name!r} not {verb} ({result.stderr.strip()})")
+        return False
+    print(f"  ✓ {owner_repo}: ruleset {name!r} {verb} with checks={contexts}")
+    return True
+
+
 def resolve_org_root(start: Path | None = None) -> Path:
     """Walk up from *start* looking for .n3rv/org-config.yaml.
 

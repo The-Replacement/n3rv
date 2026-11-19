@@ -12,10 +12,12 @@ from n3rv.init import run_init
 from n3rv.init.registry import write_registry
 from n3rv.init.update import run_update
 from n3rv.org import (
+    DEFAULT_RULESET_NAME,
     ORG_CONFIG_FILENAME,
     OrgConfig,
     OrgNotFoundError,
     OrgProject,
+    install_ruleset,
     protect_repo,
     resolve_org_root,
 )
@@ -258,3 +260,20 @@ def org_protect(
     prefix = "[DRY RUN] " if dry_run else ""
     print(f"\n{prefix}{success} protected, {errors} failed")
     raise typer.Exit(code=1 if errors > 0 else 0)
+
+
+@org_app.command("ruleset")
+def org_ruleset(
+    repo: str = typer.Argument(..., help="owner/name or GitHub URL"),
+    name: str = typer.Option(DEFAULT_RULESET_NAME, "--name", help="Ruleset name (the idempotent key)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the payload without writing"),
+) -> None:
+    """Install a default-branch ruleset requiring the repository's real CI checks.
+
+    The required contexts are read from the check runs GitHub reports for the
+    default branch, so matrix legs and renamed jobs are required by the name they
+    actually publish. Requires admin on the repository.
+    """
+    if install_ruleset(repo, name=name, dry_run=dry_run):
+        raise typer.Exit(code=0)
+    raise typer.Exit(code=1)

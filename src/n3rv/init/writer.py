@@ -142,17 +142,49 @@ def _gitignore_block() -> str:
     return "\n".join(lines)
 
 
-def configure_gitignore(root: Path) -> bool:
-    """Ensure all n3rv-generated paths are in .gitignore.
+def _managed_block_bounds(lines: list[str]) -> tuple[int, int] | None:
+    """Locate the generator-owned block: header line through the next blank line.
 
-    Appends a section with all paths n3rv owns. Idempotent —
-    checks for the section header before writing.
+    ``configure_gitignore`` writes the block with a trailing blank line, so a
+    blank line (or EOF) terminates it and preserves any project rules that
+    follow. Returns ``(start, end)`` as a half-open slice, or ``None``.
+    """
+    for start, line in enumerate(lines):
+        if line.strip() != GITIGNORE_SECTION_HEADER:
+            continue
+        end = start + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        return start, end
+    return None
+
+
+def _write_gitignore(gitignore: Path, lines: list[str]) -> None:
+    text = "\n".join(lines)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    gitignore.write_text(text, encoding="utf-8")
+
+
+def configure_gitignore(root: Path) -> bool:
+    """Ensure all n3rv-generated paths are in .gitignore, converging stale entries.
+
+    Converges rather than blindly appending:
+
+    - an existing n3rv block is rewritten in place when it is stale — e.g. the
+      old ``.n3rv/`` directory entry that swallowed ``.n3rv/state.yaml``;
+    - a project that already spells out the same rules by hand is left alone;
+    - a bare ``.n3rv/`` line is rewritten to ``.n3rv/*`` before the negation is
+      added, because git cannot re-include a file from an excluded directory.
+
+    Idempotent: a file that already matches is untouched and returns ``False``.
 
     Args:
         root: Project root directory
 
     Returns:
-        True if .gitignore was updated, False if skipped or no git repo
+        True if .gitignore was updated, False if skipped, already correct, or no
+        git repo
     """
     git_dir = root / ".git"
     if not git_dir.is_dir():
@@ -160,20 +192,32 @@ def configure_gitignore(root: Path) -> bool:
 
     gitignore = root / ".gitignore"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    lines = existing.splitlines()
 
-    # A project that already spells out the same rules by hand must not get a
-    # second, possibly contradictory block: the file's own convention wins.
-    existing_lines = {line.strip() for line in existing.splitlines()}
-    if GITIGNORE_SECTION_HEADER in existing or set(GITIGNORE_PATTERNS) <= existing_lines:
+    managed = [GITIGNORE_SECTION_HEADER] + GITIGNORE_PATTERNS
+    bounds = _managed_block_bounds(lines)
+    if bounds is not None:
+        start, end = bounds
+        if lines[start:end] == managed:
+            return False
+        lines[start:end] = managed
+        _write_gitignore(gitignore, lines)
+        return True
+
+    # A project that already spells out the same rules by hand keeps its own
+    # block: the file's convention wins over a second, possibly contradictory one.
+    if set(GITIGNORE_PATTERNS) <= {line.strip() for line in lines}:
         return False
 
-    block = _gitignore_block()
-    if existing:
-        block = "\n" + block
-
-    with gitignore.open("a", encoding="utf-8") as fh:
-        fh.write(block)
-
+    # Rewrite a bare ``.n3rv/`` to ``.n3rv/*`` so the negation below actually
+    # takes effect instead of being dead behind an excluded directory.
+    lines = [".n3rv/*" if line.strip() == ".n3rv/" else line for line in lines]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.extend(managed)
+    _write_gitignore(gitignore, lines)
     return True
 
 

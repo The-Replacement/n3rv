@@ -99,7 +99,7 @@ mcp:
     description: ''
     disabled: false
 deployment:
-  target: mainframe
+  target: none
 tiers:
   runtime: true
   spec_kit: true

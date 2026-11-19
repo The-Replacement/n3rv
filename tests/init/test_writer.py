@@ -20,7 +20,8 @@ from n3rv.init.writer import (
 # Scaffolding paths that must never reach a repo. Asserting against the real list
 # (not a local copy) so a pattern added to writer.py cannot silently escape the check.
 REQUIRED_GITIGNORE_PATTERNS = [
-    ".n3rv/",
+    ".n3rv/*",
+    "!.n3rv/state.yaml",
     ".opencode/",
     ".githooks/",
     ".specify/",
@@ -216,6 +217,41 @@ def test_configure_gitignore_skips_if_section_header_present(tmp_path: Path):
     content = gitignore.read_text()
     assert GITIGNORE_SECTION_HEADER in content
     assert "__pycache__/" in content
+
+
+def test_configure_gitignore_skips_when_rules_already_written_by_hand(tmp_path: Path):
+    """A hand-written block with the same rules must not get a second copy.
+
+    The generated block used to be appended on top of the project's own, and the
+    two disagreed about .n3rv/state.yaml.
+    """
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        "# N3RV — never commit generated files. The declared state IS committed.\n"
+        + "\n".join(GITIGNORE_PATTERNS)
+        + "\n"
+    )
+
+    result = configure_gitignore(tmp_path)
+
+    assert result is False
+    assert GITIGNORE_SECTION_HEADER not in gitignore.read_text()
+
+
+def test_configure_gitignore_leaves_state_trackable(tmp_path: Path):
+    """git must not ignore .n3rv/state.yaml: the declaration is committed."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    configure_gitignore(tmp_path)
+    state = tmp_path / ".n3rv/state.yaml"
+    state.parent.mkdir()
+    state.write_text("schema: 2\n")
+
+    ignored = subprocess.run(["git", "check-ignore", "-q", ".n3rv/state.yaml"], cwd=tmp_path, capture_output=True)
+    runtime = subprocess.run(["git", "check-ignore", "-q", ".n3rv/memory"], cwd=tmp_path, capture_output=True)
+
+    assert ignored.returncode == 1, ".n3rv/state.yaml must not be ignored"
+    assert runtime.returncode == 0, "the rest of .n3rv/ must be ignored"
 
 
 def test_configure_gitignore_appends_section_to_existing(tmp_path: Path):

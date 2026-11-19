@@ -38,6 +38,12 @@ def test_gitignore_patterns_cover_every_scaffolded_path():
     assert not missing, f"GITIGNORE_PATTERNS is missing: {missing}"
 
 
+def _git_check_ignore(root: Path, path: str) -> bool:
+    """Return True when git ignores ``path`` under ``root``'s .gitignore."""
+    result = subprocess.run(["git", "check-ignore", "-q", path], cwd=root, capture_output=True)
+    return result.returncode == 0
+
+
 def test_write_new_file_creates_file(tmp_path: Path):
     """Test writing a new file returns CREATED."""
     target = tmp_path / "test.txt"
@@ -206,17 +212,16 @@ def test_configure_gitignore_adds_all_patterns_to_new_gitignore(tmp_path: Path):
 
 
 def test_configure_gitignore_skips_if_section_header_present(tmp_path: Path):
-    """Test idempotence when section header is already in .gitignore."""
+    """Idempotence: a current managed block is left untouched."""
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     gitignore = tmp_path / ".gitignore"
-    gitignore.write_text(f"__pycache__/\n{GITIGNORE_SECTION_HEADER}\n.n3rv/\n")
+    current = "__pycache__/\n" + "\n".join([GITIGNORE_SECTION_HEADER, *GITIGNORE_PATTERNS]) + "\n"
+    gitignore.write_text(current)
 
     result = configure_gitignore(tmp_path)
 
     assert result is False
-    content = gitignore.read_text()
-    assert GITIGNORE_SECTION_HEADER in content
-    assert "__pycache__/" in content
+    assert gitignore.read_text() == current
 
 
 def test_configure_gitignore_skips_when_rules_already_written_by_hand(tmp_path: Path):
@@ -277,16 +282,61 @@ def test_configure_gitignore_without_git_repo(tmp_path: Path):
 
 
 def test_configure_gitignore_migration_from_old_format(tmp_path: Path):
-    """Test that old .n3rv/ entry is replaced by full section."""
+    """A stale managed block is rewritten in place and state.yaml becomes trackable."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("__pycache__/\n# N3RV — NEVER COMMIT (template-controlled)\n.n3rv/\n.opencode/\nAGENTS.md\n")
+
+    result = configure_gitignore(tmp_path)
+
+    assert result is True
+    (tmp_path / ".n3rv").mkdir()
+    (tmp_path / ".n3rv/state.yaml").write_text("schema: 2\n")
+    assert _git_check_ignore(tmp_path, ".n3rv/state.yaml") is False, "state.yaml must be trackable"
+    assert _git_check_ignore(tmp_path, ".n3rv/memory") is True, "runtime .n3rv/ content stays ignored"
+    assert "__pycache__/" in gitignore.read_text()
+
+
+def test_configure_gitignore_fixes_bare_n3rv_line(tmp_path: Path):
+    """A bare `.n3rv/` directory exclusion is rewritten so the negation is not dead."""
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("__pycache__/\n.n3rv/\n")
 
     result = configure_gitignore(tmp_path)
 
-    # Should add the full section (old .n3rv/ line stays, section appended)
     assert result is True
+    (tmp_path / ".n3rv").mkdir()
+    (tmp_path / ".n3rv/state.yaml").write_text("schema: 2\n")
+    assert _git_check_ignore(tmp_path, ".n3rv/state.yaml") is False, "state.yaml must be trackable"
+    assert _git_check_ignore(tmp_path, ".n3rv/memory") is True, "runtime .n3rv/ content stays ignored"
+    assert ".n3rv/\n" not in gitignore.read_text(), "the bare directory exclusion must be gone"
+
+
+def test_configure_gitignore_migration_preserves_rules_after_block(tmp_path: Path):
+    """Project rules that follow the managed block survive a rewrite."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        "# N3RV — NEVER COMMIT (template-controlled)\n.n3rv/\nAGENTS.md\n\n# project rules\n/scratch/\n"
+    )
+
+    configure_gitignore(tmp_path)
+
     content = gitignore.read_text()
-    assert GITIGNORE_SECTION_HEADER in content
-    for pattern in GITIGNORE_PATTERNS:
-        assert pattern in content, f"Missing pattern: {pattern}"
+    assert "/scratch/" in content
+    assert "# project rules" in content
+    assert _git_check_ignore(tmp_path, ".n3rv/state.yaml") is False
+
+
+def test_configure_gitignore_is_idempotent_after_migration(tmp_path: Path):
+    """A second run after migration reports no change and rewrites nothing."""
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("__pycache__/\n.n3rv/\n")
+
+    assert configure_gitignore(tmp_path) is True
+    once = gitignore.read_text()
+
+    assert configure_gitignore(tmp_path) is False
+    assert gitignore.read_text() == once

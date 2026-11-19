@@ -795,6 +795,18 @@ def _resolve_marker_merge(target: Path, rendered: str) -> Resolution:
     return Resolution(f"{existing[:start_idx]}{MARKER_START}\n{body}\n{MARKER_END}{existing[end_idx:]}")
 
 
+#: Root keys n3rv itself renamed between template generations. The singular V1
+#: shapes are generator-owned by definition, so a legacy key is retired when its
+#: replacement is rendered even when no ``json_keys`` ownership record exists
+#: yet — the rename predates ownership tracking (n3rv#14). Only ``opencode.json``
+#: applies: it is the only user-facing JSON_MERGE output carrying these shapes.
+LEGACY_ROOT_RENAMES: dict[str, str] = {
+    "command": "commands",
+    "tools": "permissions",
+    "agent": "agents",
+}
+
+
 def _resolve_json_merge(
     root: Path,
     target: Path,
@@ -827,6 +839,16 @@ def _resolve_json_merge(
         record = (managed.get("json_keys") or {}).get(output_path) or {}
         owned_root = set(record.get(".") or [])
         rendered_root = set(template_data.keys())
+
+        # Retire V1 root keys n3rv renamed, even without a prior ownership record.
+        # A key is only removed when its replacement is rendered, so an unrelated
+        # user key that happens to share a legacy name is left alone.
+        if output_path == "opencode.json":
+            for legacy, current in LEGACY_ROOT_RENAMES.items():
+                if legacy in merged and current in rendered_root and legacy not in rendered_root:
+                    del merged[legacy]
+                    notes.append(f"removed JSON key {legacy!r} (legacy rename to {current!r})")
+
         merged_root = set(merged.keys()) if isinstance(merged, dict) else set()
         # delete generator-owned keys no longer rendered (only when we have a prior record)
         if owned_root:

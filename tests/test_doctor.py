@@ -579,3 +579,207 @@ def test_run_doctor_strict_passes_when_deployment_target_is_none(tmp_path: Path,
     messages = [finding["message"] for finding in drift["findings"]]
     assert any("deployment.target is none" in m for m in messages)
     assert not any(f["level"] == "fail" and "mainframe" in f["message"] for f in drift["findings"])
+
+
+# ── the declared runtime verifier (infra#3) ───────────────────────────
+
+
+def _verdict(
+    verdict: str = "OK",
+    source_sha: str | None = "aaa111",
+    checks: list[dict[str, str]] | None = None,
+) -> CommandResult:
+    payload: dict[str, object] = {"schema": 1, "verdict": verdict, "checks": checks or []}
+    if source_sha is not None:
+        payload["source_sha"] = source_sha
+    return CommandResult(0, json.dumps(payload))
+
+
+def _runner_with(
+    verifier: CommandResult | None,
+    *,
+    github: CommandResult | None = None,
+    mainframe: CommandResult | None = None,
+) -> FakeRunner:
+    responses: list[tuple[tuple[str, ...], CommandResult]] = [
+        (("git", "rev-parse", "HEAD"), CommandResult(0, "aaa111\n")),
+        (("git", "rev-parse", "--abbrev-ref", "HEAD"), CommandResult(0, "main\n")),
+        (("git", "remote", "get-url", "origin"), CommandResult(0, "https://github.com/o/r.git\n")),
+        (("gh", "api", "repos/o/r", "--jq"), CommandResult(0, "main\n")),
+        (
+            ("gh", "api", "repos/o/r/commits/main", "--jq"),
+            github if github is not None else CommandResult(0, "aaa111\n"),
+        ),
+        (("git", "remote", "get-url", "mainframe"), mainframe or CommandResult(1, "", "")),
+    ]
+    if verifier is not None:
+        responses.append((("verify",), verifier))
+    return FakeRunner(responses)
+
+
+def _drift(
+    root: Path,
+    runner: FakeRunner,
+    *,
+    command: list[str] | None = None,
+    target: str = "mainframe",
+    timeout_s: int = 30,
+):
+    return doctor.check_drift(
+        root,
+        runner,
+        deployment_target=target,
+        runtime_command=command if command is not None else ["verify"],
+        runtime_timeout_s=timeout_s,
+    )
+
+
+def test_runtime_agreement_passes_when_the_sha_matches_github(tmp_path: Path):
+    result = _drift(_git_root(tmp_path), _runner_with(_verdict()))
+
+    assert not result.failed
+    assert any(f.level == "ok" and "runtime source_sha aaa111" in f.message for f in result.findings)
+
+
+def test_runtime_disagreement_with_github_names_both_revisions(tmp_path: Path):
+    result = _drift(
+        _git_root(tmp_path),
+        _runner_with(_verdict(source_sha="ddd444")),
+    )
+
+    assert result.failed
+    failure = next(f for f in result.findings if f.level == "fail")
+    assert "ddd444" in failure.message and "aaa111" in failure.message
+
+
+def test_runtime_verdict_is_not_enough_without_github(tmp_path: Path):
+    """The host agreeing with its own manifest says nothing about GitHub."""
+    result = _drift(
+        _git_root(tmp_path),
+        _runner_with(_verdict(), github=CommandResult(1, "", "HTTP 503")),
+    )
+
+    assert not result.failed
+    skips = [f.message for f in result.findings if f.level == "skip"]
+    assert any("agreement cannot be established" in message for message in skips)
+    assert result.strict().failed  # and --strict refuses to call it clean
+
+
+def test_runtime_mismatch_reports_each_failing_check(tmp_path: Path):
+    checks = [
+        {"name": "label:mario", "status": "FAIL", "detail": "revision is 9f9f9f, expected aaa111"},
+        {"name": "checkout", "status": "PASS", "detail": "HEAD is aaa111"},
+    ]
+
+    result = _drift(_git_root(tmp_path), _runner_with(_verdict(verdict="MISMATCH", checks=checks)))
+
+    assert result.failed
+    failure = next(f for f in result.findings if f.level == "fail")
+    assert "label:mario" in failure.message and "9f9f9f" in failure.message
+    assert not any("checkout" in f.message for f in result.findings if f.level == "fail")
+
+
+def test_runtime_unverified_is_a_skip(tmp_path: Path):
+    result = _drift(_git_root(tmp_path), _runner_with(_verdict(verdict="UNVERIFIED", source_sha=None)))
+
+    assert not result.failed
+    assert any(f.level == "skip" and "could not verify" in f.message for f in result.findings)
+
+
+def test_runtime_timeout_is_a_skip_and_never_a_pass(tmp_path: Path):
+    result = _drift(
+        _git_root(tmp_path),
+        _runner_with(CommandResult(124, "", "ssh timed out after 45s")),
+        timeout_s=45,
+    )
+
+    assert not result.failed
+    assert any(f.level == "skip" and "timed out after 45s" in f.message for f in result.findings)
+    assert not any(f.level == "ok" for f in result.findings if "runtime" in f.message)
+
+
+def test_runtime_unparseable_output_is_a_skip(tmp_path: Path):
+    result = _drift(_git_root(tmp_path), _runner_with(CommandResult(0, "everything is fine, honestly")))
+
+    assert not result.failed
+    assert any(f.level == "skip" and "runtime verifier" in f.message for f in result.findings)
+
+
+def test_a_verifier_that_could_mutate_the_host_never_runs(tmp_path: Path):
+    runner = _runner_with(_verdict())
+
+    result = _drift(_git_root(tmp_path), runner, command=["docker", "compose", "up", "-d"])
+
+    assert any(f.level == "skip" and "mutating verify_command" in f.message for f in result.findings)
+    assert ["docker", "compose", "up", "-d"] not in runner.calls
+
+
+def test_the_drift_leg_issues_only_the_declared_argv_plus_reads(tmp_path: Path):
+    runner = _runner_with(_verdict())
+
+    _drift(_git_root(tmp_path), runner, command=["verify"])
+
+    assert ["verify"] in runner.calls
+    joined = " ".join(" ".join(call) for call in runner.calls)
+    for verb in (" push ", " restart ", " compose up", " compose build", " rm "):
+        assert verb not in f" {joined} "
+
+
+def test_declared_runtime_is_not_run_when_the_target_is_none(tmp_path: Path):
+    runner = _runner_with(_verdict())
+
+    result = _drift(_git_root(tmp_path), runner, target="none")
+
+    assert not result.failed
+    assert ["verify"] not in runner.calls
+    assert any(f.level == "warn" and "declared but deployment.target is none" in f.message for f in result.findings)
+
+
+def test_unreachable_github_never_calls_a_reachable_mainframe_agreement(tmp_path: Path):
+    """The old leg returned ok on a bare SHA when GitHub was down: that was a false green."""
+    runner = _runner_with(None, github=CommandResult(1, "", "offline"), mainframe=CommandResult(0, "ssh://box\n"))
+    runner.responses.append((("git", "ls-remote"), CommandResult(0, "aaa111\tHEAD\n")))
+
+    result = doctor.check_drift(_git_root(tmp_path), runner, runtime_command=None)
+
+    assert not result.failed
+    assert any(f.level == "skip" and "agreement cannot be established" in f.message for f in result.findings)
+    assert not any(f.level == "ok" and "HEAD is" in f.message for f in result.findings)
+
+
+def test_run_doctor_reads_the_verifier_from_state(tmp_path: Path, capsys):
+    root = _git_root(tmp_path)
+    (root / ".n3rv").mkdir()
+    (root / ".n3rv/state.yaml").write_text(
+        "schema: 2\nproject:\n  name: demo\n  stack: generic\n"
+        "deployment:\n  target: mainframe\n  runtime:\n"
+        "    verify_command: ['verify', '--json']\n    timeout_s: 45\n"
+    )
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    catalog = _catalog_with(*(data["phase_model"] for data in SDD_PHASE_MAP.values()))
+    runner = _runner_with(_verdict())
+    runner.responses.extend(
+        [
+            (("opencode", "models"), catalog),
+            (("opencode", "mcp", "list"), CommandResult(0, "")),
+        ]
+    )
+
+    exit_code = doctor.run_doctor(
+        root,
+        templates_dir=templates,
+        global_config=tmp_path / "missing.json",
+        runner=runner,
+        json_output=True,
+    )
+
+    assert ["verify", "--json"] in runner.calls
+    report = json.loads(capsys.readouterr().out)
+    runtime_findings = [
+        finding
+        for finding in report["categories"]["drift"]["findings"]
+        if finding["context"].get("source") == "runtime"
+    ]
+    assert runtime_findings and runtime_findings[0]["context"]["verdict"] == "OK"
+    assert exit_code == 0

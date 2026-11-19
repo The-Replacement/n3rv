@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from n3rv import board
+from n3rv import board, runtime
 
 #: One exit-code bit per category. A single failing category yields its own
 #: distinct code; several failing categories OR their bits together.
@@ -143,8 +143,10 @@ def check_drift(
     repo: str | None = None,
     mainframe_remote: str = "mainframe",
     deployment_target: str = "mainframe",
+    runtime_command: list[str] | None = None,
+    runtime_timeout_s: int = 30,
 ) -> CategoryResult:
-    """Workstation HEAD vs live GitHub default branch vs mainframe HEAD."""
+    """Workstation HEAD vs live GitHub default branch vs the deployed host."""
     findings: list[Finding] = []
     if not (root / ".git").exists():
         return CategoryResult("drift", [_skip("not a git repository", root=str(root))])
@@ -223,13 +225,22 @@ def check_drift(
     mainframe = _git(runner, root, "remote", "get-url", mainframe_remote)
     if deployment_target == "none":
         findings.append(_ok("deployment.target is none; mainframe leg skipped by declaration"))
-        if mainframe.returncode == 0:
+        if runtime_command:
+            findings.append(
+                _warn("deployment.runtime is declared but deployment.target is none: the verifier is not run")
+            )
+        elif mainframe.returncode == 0:
             findings.append(_warn(f"{mainframe_remote} remote is configured but deployment.target is none"))
+    elif runtime_command:
+        findings.extend(_runtime_findings(runner, root, runtime_command, runtime_timeout_s, github_sha))
     elif mainframe.returncode != 0:
         findings.append(
             _skip(
                 f"no {mainframe_remote} remote configured",
-                hint="add the remote, pass --mainframe-remote, or use --strict to fail on unverified checks",
+                hint=(
+                    "add the remote, pass --mainframe-remote, declare deployment.runtime, "
+                    "or use --strict to fail on unverified checks"
+                ),
             )
         )
     else:
@@ -243,17 +254,76 @@ def check_drift(
             )
         else:
             mainframe_sha = ls_remote.stdout.split()[0]
-            level = "ok" if github_sha is None or mainframe_sha == github_sha else "fail"
-            findings.append(
-                Finding(
-                    level,
-                    f"{mainframe_remote} HEAD is {mainframe_sha[:12]}"
-                    + ("" if level == "ok" else f" (GitHub is {(github_sha or '')[:12]})"),
-                    {"remote": mainframe_remote, "sha": mainframe_sha},
+            if github_sha is None:
+                # A local SHA with nothing to compare it to is not agreement.
+                # Calling it "ok" was the false green this leg had before.
+                findings.append(
+                    _skip(
+                        f"{mainframe_remote} HEAD is {mainframe_sha[:12]}, but GitHub's default-branch SHA "
+                        "is unavailable: agreement cannot be established",
+                        remote=mainframe_remote,
+                        sha=mainframe_sha,
+                    )
                 )
-            )
+            else:
+                level = "ok" if mainframe_sha == github_sha else "fail"
+                findings.append(
+                    Finding(
+                        level,
+                        f"{mainframe_remote} HEAD is {mainframe_sha[:12]}"
+                        + ("" if level == "ok" else f" (GitHub is {github_sha[:12]})"),
+                        {"remote": mainframe_remote, "sha": mainframe_sha},
+                    )
+                )
 
     return CategoryResult("drift", findings)
+
+
+def _runtime_findings(
+    runner: Runner,
+    root: Path,
+    command: list[str],
+    timeout_s: int,
+    github_sha: str | None,
+) -> list[Finding]:
+    """Turn a declared runtime verifier's answer into drift findings.
+
+    The verifier proves the host agrees with its own deploy record; that says
+    nothing about GitHub. Both halves are required, so an ``OK`` verdict with
+    no ``source_sha`` or no GitHub SHA is a skip, never a pass.
+    """
+    try:
+        verdict = runtime.run_verdict(command, runner, cwd=root, timeout_s=timeout_s)
+    except runtime.VerdictError as exc:
+        return [_skip(f"runtime verifier {exc}", source="runtime")]
+
+    context = {"source": "runtime", **runtime.to_context(verdict)}
+
+    if verdict.verdict == "UNVERIFIED":
+        return [_skip("runtime verifier could not verify the deployment", **context)]
+
+    if verdict.verdict == "MISMATCH":
+        failing = verdict.failing or (runtime.Check("verdict", "FAIL", "the verifier reported a mismatch"),)
+        return [_fail(f"runtime {check.name}: {check.detail}".rstrip(": "), **context) for check in failing]
+
+    if github_sha is None:
+        return [
+            _skip(
+                "runtime verifier agrees with the host, but GitHub's default-branch SHA is unavailable: "
+                "agreement cannot be established",
+                **context,
+            )
+        ]
+    if verdict.source_sha is None:
+        return [_skip("runtime verifier reported no source_sha: the GitHub comparison cannot be made", **context)]
+    if verdict.source_sha != github_sha:
+        return [
+            _fail(
+                f"runtime source_sha {verdict.source_sha[:12]} != GitHub {github_sha[:12]}",
+                **context,
+            )
+        ]
+    return [_ok(f"runtime source_sha {verdict.source_sha[:12]} matches GitHub and the host's own record", **context)]
 
 
 # ── models ────────────────────────────────────────────────────────────
@@ -613,22 +683,43 @@ def run_doctor(
     runner: Runner | None = None,
     json_output: bool = False,
     strict: bool = False,
+    runtime_timeout_s: int | None = None,
 ) -> int:
     """Run every category and OR their exit bits.
 
     ``strict`` upgrades skipped checks to failures, so a run that could not
     reach a remote or the GitHub API cannot pass by omission.
+
+    ``runtime_timeout_s`` overrides ``deployment.runtime.timeout_s`` from the
+    declared state; the state is the default because the right bound belongs to
+    the verifier the project wrote, not to the caller.
     """
     run = runner or default_runner
     deployment_target = "mainframe"
+    runtime_command: list[str] | None = None
+    timeout_s = runtime_timeout_s if runtime_timeout_s is not None else 30
     try:
         from n3rv.reconcile import load_state
 
-        deployment_target = load_state(root).deployment.target
+        deployment = load_state(root).deployment
+        deployment_target = deployment.target
+        if deployment.runtime is not None:
+            runtime_command = deployment.runtime.verify_command
+            if runtime_timeout_s is None:
+                timeout_s = deployment.runtime.timeout_s
     except Exception:
         deployment_target = "mainframe"
+        runtime_command = None
     categories = [
-        check_drift(root, run, repo=repo, mainframe_remote=mainframe_remote, deployment_target=deployment_target),
+        check_drift(
+            root,
+            run,
+            repo=repo,
+            mainframe_remote=mainframe_remote,
+            deployment_target=deployment_target,
+            runtime_command=runtime_command,
+            runtime_timeout_s=timeout_s,
+        ),
         check_models(root, run, templates_dir=templates_dir),
         check_mcp(root, run, global_config=global_config),
         check_convergence(root, templates_dir=templates_dir),

@@ -128,6 +128,20 @@ class Detection(BaseModel):
     requires_python: str | None = None
 
 
+class DeploymentRuntime(BaseModel):
+    """How to ask a deployed host whether it runs what it says it runs.
+
+    The command is an operator-supplied argv (never a shell string) that must be
+    read-only and must print the verdict contract described in
+    :mod:`n3rv.runtime`. ``doctor`` runs it, nothing else does.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verify_command: list[str] | None = Field(default=None, min_length=1)
+    timeout_s: int = Field(default=30, ge=1, le=600)
+
+
 class Deployment(BaseModel):
     """Declared deployment topology (an operator decision, not a detection).
 
@@ -139,6 +153,7 @@ class Deployment(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     target: Literal["mainframe", "none"] = "mainframe"
+    runtime: DeploymentRuntime | None = None
 
 
 class Tiers(BaseModel):

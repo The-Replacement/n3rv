@@ -130,6 +130,11 @@ def doctor_command(
         "--strict",
         help="Fail when a check cannot be verified instead of skipping it",
     ),
+    runtime_timeout: int | None = typer.Option(
+        None,
+        "--runtime-timeout",
+        help="Seconds to allow the declared deployment.runtime verifier (default: the state's timeout_s)",
+    ),
 ) -> None:
     """Run read-only convergence diagnostics.
 
@@ -148,6 +153,7 @@ def doctor_command(
             global_config=global_config,
             json_output=json_output,
             strict=strict,
+            runtime_timeout_s=runtime_timeout,
         )
     )
 

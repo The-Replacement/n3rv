@@ -250,9 +250,122 @@ async def test_complete_by_other_agent_is_forbidden_and_names_assignee(runtime_s
 async def test_send_with_target_agent_assigns_that_agent_and_stays_submitted(runtime_settings) -> None:
     client = await build_client(runtime_settings)
     try:
+        await _register(client, "radio-session")
         task = await _send_task(client, target_agent="radio-session")
 
         assert task["status"]["state"] == "submitted"
         assert task["metadata"]["assigned_agent"] == "radio-session"
+    finally:
+        await client.close()
+
+
+async def _register(client, agent_id):
+    response = await client.post(
+        "/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "20",
+            "method": "agents/register",
+            "params": {"agent_id": agent_id},
+        },
+    )
+    assert response.status == 200
+    return (await response.json())["result"]
+
+
+@pytest.mark.asyncio
+async def test_agents_register_then_list(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        await _register(client, "radio-session")
+        response = await client.post(
+            "/rpc",
+            json={"jsonrpc": "2.0", "id": "21", "method": "agents/list", "params": {}},
+        )
+        agents = (await response.json())["result"]["agents"]
+
+        assert [a["agent_id"] for a in agents] == ["radio-session"]
+        assert agents[0]["stale"] is False
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_registered_target_assigns_it(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        await _register(client, "radio-session")
+        task = await _send_task(client, target_agent="radio-session")
+
+        assert task["status"]["state"] == "submitted"
+        assert task["metadata"]["assigned_agent"] == "radio-session"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_unknown_target_is_rejected_and_lists_live_ids(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        await _register(client, "radio-session")
+        response = await client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "22",
+                "method": "tasks/send",
+                "params": {
+                    "requesting_agent": "claude",
+                    "skill_id": "implementation",
+                    "description": "x",
+                    "target_agent": "typo-session",
+                    "metadata": {"auto_complete": False},
+                },
+            },
+        )
+
+        assert response.status == 400
+        body = await response.text()
+        assert "typo-session" in body
+        assert "radio-session" in body
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_allow_offline_queues_unknown_target(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client, target_agent="ghost", allow_offline=True)
+
+        assert task["status"]["state"] == "submitted"
+        assert task["metadata"]["assigned_agent"] == "ghost"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_stale_target_rejected(runtime_settings, monkeypatch) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        await _register(client, "radio-session")
+        monkeypatch.setenv("N3RV_AGENT_TTL_SECONDS", "0")
+        response = await client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "23",
+                "method": "tasks/send",
+                "params": {
+                    "requesting_agent": "claude",
+                    "skill_id": "implementation",
+                    "description": "x",
+                    "target_agent": "radio-session",
+                    "metadata": {"auto_complete": False},
+                },
+            },
+        )
+
+        assert response.status == 400
     finally:
         await client.close()

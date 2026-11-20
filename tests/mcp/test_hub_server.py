@@ -79,3 +79,21 @@ def test_detect_agent_id_ignores_blank_override(monkeypatch) -> None:
     monkeypatch.setenv("N3RV_AGENT_ID", "   ")
 
     assert hub_server.detect_agent_id() == "opencode"
+
+
+def test_send_heartbeat_registers_current_id(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def fake_rpc(hub_url: str, method: str, params: dict) -> dict:
+        calls.append((method, params))
+        return {}
+
+    monkeypatch.setattr(hub_server, "_rpc", fake_rpc)
+    monkeypatch.setattr(hub_server, "_last_heartbeat", 0.0)
+    monkeypatch.setattr(hub_server, "_HEARTBEAT_SECONDS", 30.0)
+    monkeypatch.setenv("N3RV_AGENT_ID", "radio-session")
+
+    hub_server._send_heartbeat("http://hub")
+    hub_server._send_heartbeat("http://hub")
+
+    assert calls == [("agents/register", {"agent_id": "radio-session"})]

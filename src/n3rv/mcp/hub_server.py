@@ -7,6 +7,7 @@ assigned to them through the configured local hub URL (default 127.0.0.1:19820).
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 from n3rv.mcp.shared import (
@@ -27,6 +28,23 @@ _AGENT_ID_ALIASES = {
 }
 
 _rpc = hub_rpc
+
+#: Throttle so a burst of tool calls does not hammer the hub.
+_HEARTBEAT_SECONDS = 30.0
+_last_heartbeat = 0.0
+
+
+def _send_heartbeat(hub_url: str) -> None:
+    """Best-effort agents/register for this session id, at most once per interval."""
+    global _last_heartbeat
+    now = time.monotonic()
+    if now - _last_heartbeat < _HEARTBEAT_SECONDS:
+        return
+    _last_heartbeat = now
+    try:
+        _rpc(hub_url, "agents/register", {"agent_id": detect_agent_id()})
+    except Exception:
+        logger.debug("agent heartbeat failed", exc_info=True)
 
 
 def _resolve_agent_ids(agent_id: str | None = None) -> list[str]:
@@ -77,12 +95,15 @@ def build_hub_server(project_root: Path | None = None):
         description: str,
         requesting_agent: str = "unknown",
         target_agent: str | None = None,
+        allow_offline: bool = False,
     ) -> dict:
+        _send_heartbeat(hub_url)
         params: dict = {
             "skill_id": skill_id,
             "description": description,
             "requesting_agent": requesting_agent,
             "metadata": {"auto_complete": False},
+            "allow_offline": allow_offline,
         }
         if target_agent:
             # Explicit cross-session handoff: route straight to the named id
@@ -129,11 +150,23 @@ def build_hub_server(project_root: Path | None = None):
 
     @server.tool(
         description=(
+            "List hub agent ids registered for discovery. include_stale also returns "
+            "entries whose heartbeat is older than the TTL, flagged stale."
+        )
+    )
+    async def list_agents(include_stale: bool = False) -> dict:
+        _send_heartbeat(hub_url)
+        result = _rpc(hub_url, "agents/list", {"include_stale": include_stale})
+        return result_payload(result)
+
+    @server.tool(
+        description=(
             "Claim a task assigned to this agent (submitted -> working). "
             "Call it before complete_task so started_at reflects a real start."
         )
     )
     async def claim_task(task_id: str) -> dict:
+        _send_heartbeat(hub_url)
         agent_id = detect_agent_id()
         out = _rpc(hub_url, "tasks/claim", {"task_id": task_id, "agent_id": agent_id})
         logger.info("claim_task id=%s by=%s", task_id, agent_id)
@@ -147,6 +180,7 @@ def build_hub_server(project_root: Path | None = None):
         )
     )
     async def complete_task(task_id: str, result: str) -> dict:
+        _send_heartbeat(hub_url)
         completing_agent = detect_agent_id()
         out = _rpc(
             hub_url,
@@ -165,6 +199,8 @@ def build_hub_server(project_root: Path | None = None):
         result = _rpc(hub_url, "tasks/get", {"task_id": task_id})
         return result_payload(result)
 
+    # Announce this session so it is discoverable before its first tool call.
+    _send_heartbeat(hub_url)
     return server
 
 

@@ -5,7 +5,7 @@ N3RV exposes **four** MCP servers — **31 tools** total — for agent integrati
 | Server | Tools | Command |
 |--------|-------|---------|
 | Memory | 12 | `n3rv-memory` |
-| Hub | 6 | `n3rv-hub` |
+| Hub | 7 | `n3rv-hub` |
 | Exec | 8 | `n3rv-exec` |
 | Code Graph | 6 | `n3rv-code-graph` |
 
@@ -185,6 +185,7 @@ Delegate a task to another agent via the A2A hub. The task is created `submitted
 | `description` | string | Yes | Task description |
 | `requesting_agent` | string | No | Agent source (default: `unknown`, usually `N3RV_AGENT_SOURCE`) |
 | `target_agent` | string | No | Explicit handoff: assign this agent id (from its `N3RV_AGENT_ID`) instead of routing by skill |
+| `allow_offline` | bool | No | Queue even when `target_agent` is not registered. Default `false`: an unknown/stale target is rejected with the list of live ids |
 
 Returns: Task object with `id`, `status`, `assigned_agent`. State is `submitted` until claimed.
 
@@ -211,6 +212,18 @@ Check pending tasks assigned to the current agent (alias for `list_pending_tasks
 | `agent_id` | string | No | Agent ID (defaults to `N3RV_AGENT_ID`, falling back to `N3RV_AGENT_SOURCE`) |
 
 Returns: List of task objects.
+
+---
+
+### `list_agents`
+
+List hub agent ids registered for discovery. A session registers itself (and heartbeats) automatically when its hub MCP server starts.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `include_stale` | bool | No | Also return ids whose heartbeat is older than `N3RV_AGENT_TTL_SECONDS`, flagged `stale` |
+
+Returns: `{"agents": [{"agent_id", "started_at", "last_seen", "stale"}]}`.
 
 ---
 

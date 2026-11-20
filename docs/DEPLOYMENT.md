@@ -151,7 +151,8 @@ n3rv org protect                              # apply (required checks, 1 approv
 | `N3RV_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `N3RV_AGENT_SOURCE` | `opencode` | Agent identifier for memory scope and hub operations |
 | `N3RV_AGENT_ID` | — | Per-session hub identity; overrides `N3RV_AGENT_SOURCE` for `delegate_task`/`claim_task`/`complete_task` targeting |
-| `N3RV_AGENT_TTL_SECONDS` | `120` | Hub agent-registry staleness window; `agents/list` flags ids whose heartbeat is older, and they are not routed to by default |
+| `N3RV_AGENT_TTL_SECONDS` | `120` | Hub agent-registry **presence hint**: `agents/list` flags ids whose heartbeat is older, and `delegate_task` copies that into the task's `target_stale` metadata. It never blocks routing — an idle-but-registered id is still addressable |
+| `N3RV_AGENT_RETENTION_DAYS` | `30` | How long a registered id stays an address. `agents/list` collects records idle beyond this window; `0` or negative disables pruning |
 | `N3RV_HUB_URL` | `http://127.0.0.1:19820` | Hub URL for MCP delegation |
 | `N3RV_MEMORY_PROFILE` | `full` | Memory tool availability (`full` or `safe`) |
 | `N3RV_EXEC_DEBOUNCE_MS` | `300` | Watcher debounce (exec + code-graph) |

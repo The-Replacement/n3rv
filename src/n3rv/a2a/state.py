@@ -197,19 +197,28 @@ class HubStateStore:
             result.append((record, stale))
         return sorted(result, key=lambda pair: pair[0].agent_id)
 
-    def prune_agents(self, *, ttl_seconds: float, max_records: int = 256) -> int:
-        """Bound the registry: delete records idle beyond the TTL once over the cap."""
-        records = list(self.agents_dir.glob("*.json"))
-        if len(records) <= max_records:
+    def prune_agents(self, *, retention_seconds: float) -> int:
+        """Delete records idle beyond the retention window, and return the count.
+
+        Retention is long on purpose (days, not the TTL's minutes): a registered
+        id is an *address*, and an address that expires while the session still
+        exists is not one (n3rv#38). Staleness inside the window is advisory;
+        only a session that has plausibly stopped existing loses its address.
+
+        ``retention_seconds <= 0`` disables pruning rather than emptying the
+        registry, so a misconfigured value cannot silently unroute every session.
+        """
+        if retention_seconds <= 0:
             return 0
         now = datetime.now(UTC)
         removed = 0
-        for agent_file in records:
+        for agent_file in self.agents_dir.glob("*.json"):
             try:
                 record = AgentRecord.model_validate_json(agent_file.read_text(encoding="utf-8"))
             except Exception:
+                logger.exception("Failed to load agent: %s", agent_file)
                 continue
-            if (now - record.last_seen).total_seconds() > ttl_seconds:
+            if (now - record.last_seen).total_seconds() > retention_seconds:
                 agent_file.unlink(missing_ok=True)
                 removed += 1
         return removed

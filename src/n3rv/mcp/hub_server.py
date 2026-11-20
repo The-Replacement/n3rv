@@ -151,7 +151,8 @@ def build_hub_server(project_root: Path | None = None):
     @server.tool(
         description=(
             "List hub agent ids registered for discovery. include_stale also returns "
-            "entries whose heartbeat is older than the TTL, flagged stale."
+            "entries whose heartbeat is older than the TTL, flagged stale. Stale is "
+            "advisory: an idle id is still addressable, and a task sent to it queues."
         )
     )
     async def list_agents(include_stale: bool = False) -> dict:

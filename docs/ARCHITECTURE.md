@@ -113,7 +113,7 @@ aiohttp web server providing JSON-RPC 2.0 interface for task delegation.
 | `tasks/complete` | Mark task as completed |
 | `tasks/sendSubscribe` | SSE stream for task status updates |
 | `agents/register` | Register or heartbeat an agent id (upsert) |
-| `agents/list` | List live agent ids; `include_stale` flags expired ones |
+| `agents/list` | List registered agent ids; `include_stale` flags idle ones (advisory, not a routing gate) |
 | `agents/unregister` | Remove an agent id |
 
 **Task Lifecycle:**
@@ -356,9 +356,13 @@ The hub (`src/n3rv/a2a/hub.py`) routes tasks by `skill_id` via `delegate_task` /
 - **Addressing:** `delegate_task(target_agent=...)` hands work to a specific id. A
   session distinguishes itself with `N3RV_AGENT_ID` (falling back to
   `N3RV_AGENT_SOURCE`); without an id override every session on a source shares one
-  identity. A heartbeat registry (`agents/register` / `agents/list`) makes live ids
-  discoverable; an unknown or stale target is rejected with the live-id list unless
-  `allow_offline` is set. Staleness is `N3RV_AGENT_TTL_SECONDS` (default 120).
+  identity. A heartbeat registry (`agents/register` / `agents/list`) makes ids
+  discoverable and durable: a registered id is an **address**, so an idle session is
+  still routable and the task queues until it claims. Only an id that was never
+  registered is rejected with the known-id list, unless `allow_offline` is set.
+  Staleness (`N3RV_AGENT_TTL_SECONDS`, default 120) is a presence hint carried on the
+  task as `target_stale` / `target_last_seen`; records are collected only past
+  `N3RV_AGENT_RETENTION_DAYS` (default 30).
 - **Lifecycle:** a delegated task is `submitted`, not `working`; the assignee calls
   `claim_task` (→ `working` + `started_at`) and then `complete_task`. Identity is
   advisory — the hub is localhost-only and unauthenticated.

@@ -47,7 +47,7 @@ async def test_recover_completed_task_is_skipped(hub: A2AHub):
 
 
 async def test_recover_submitted_task_reroutes_to_matching_agent(hub: A2AHub):
-    """Test that submitted tasks are rerouted and resumed on recovery."""
+    """A pending submitted task is rerouted on recovery, left submitted to claim."""
     task = hub.state.create_task(
         requesting_agent="opencode",
         assigned_agent="pending",
@@ -60,7 +60,7 @@ async def test_recover_submitted_task_reroutes_to_matching_agent(hub: A2AHub):
 
     recovered_task = hub.state.load_task(task.id)
     assert recovered_task is not None
-    assert recovered_task.state == TaskState.WORKING
+    assert recovered_task.state == TaskState.SUBMITTED
     assert recovered_task.assigned_agent == "opencode"
     assert recovered_task.target_skill == "implementation"
 
@@ -158,9 +158,9 @@ async def test_recover_mixed_tasks(hub: A2AHub):
     # Run recovery
     await hub._recover_tasks()
 
-    # Submitted task should be rerouted
+    # Submitted task should be rerouted but remain submitted until claimed
     recovered_submitted = hub.state.load_task(submitted_task.id)
-    assert recovered_submitted.state == TaskState.WORKING
+    assert recovered_submitted.state == TaskState.SUBMITTED
     assert recovered_submitted.assigned_agent == "opencode"
 
     # Working task should be failed
@@ -171,3 +171,20 @@ async def test_recover_mixed_tasks(hub: A2AHub):
     # Completed task should be unchanged
     recovered_completed = hub.state.load_task(completed_task.id)
     assert recovered_completed.state == TaskState.COMPLETED
+
+
+async def test_recover_routed_submitted_task_is_not_rerouted(hub: A2AHub):
+    """A task already assigned (routed) must not be reassigned on restart."""
+    task = hub.state.create_task(
+        requesting_agent="agent1",
+        assigned_agent="radio-session",
+        target_skill="implementation",
+        description="already routed",
+        metadata={"auto_complete": False},
+    )
+
+    await hub._recover_tasks()
+
+    reloaded = hub.state.load_task(task.id)
+    assert reloaded.state == TaskState.SUBMITTED
+    assert reloaded.assigned_agent == "radio-session"

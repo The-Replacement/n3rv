@@ -32,6 +32,19 @@ def detect_agent_source() -> str:
     return os.environ.get("N3RV_AGENT_SOURCE", "opencode")
 
 
+def detect_agent_id() -> str:
+    """Hub addressing identity: N3RV_AGENT_ID overrides N3RV_AGENT_SOURCE.
+
+    N3RV_AGENT_SOURCE stays the memory/agent scope (one per tool, e.g. opencode);
+    N3RV_AGENT_ID distinguishes sessions on the same source for hub handoff.
+    Empty values are ignored so a blank override cannot erase the source.
+    """
+    explicit = (os.environ.get("N3RV_AGENT_ID") or "").strip().lower()
+    if explicit:
+        return explicit
+    return detect_agent_source().strip().lower()
+
+
 def result_payload(
     value: BaseModel | list[BaseModel] | dict[str, Any] | list[dict[str, Any]],
 ) -> Any:

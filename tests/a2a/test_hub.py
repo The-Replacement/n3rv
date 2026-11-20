@@ -139,3 +139,120 @@ async def test_cancel_working_task(runtime_settings) -> None:
         assert payload["result"]["status"]["state"] == "canceled"
     finally:
         await client.close()
+
+
+async def _send_task(client, **overrides):
+    params = {
+        "requesting_agent": "claude",
+        "skill_id": "implementation",
+        "description": "Implement auth module from design",
+        "metadata": {"auto_complete": False},
+    }
+    params.update(overrides)
+    response = await client.post(
+        "/rpc",
+        json={"jsonrpc": "2.0", "id": "10", "method": "tasks/send", "params": params},
+    )
+    assert response.status == 200
+    return (await response.json())["result"]
+
+
+@pytest.mark.asyncio
+async def test_tasks_send_leaves_task_submitted_without_started_at(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client)
+
+        assert task["status"]["state"] == "submitted"
+        assert task["metadata"]["assigned_agent"] not in ("", "pending")
+        assert "started_at" not in task["metadata"]
+        assert "routed_at" in task["metadata"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_moves_task_to_working_with_started_at(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client)
+        agent = task["metadata"]["assigned_agent"]
+
+        response = await client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "11",
+                "method": "tasks/claim",
+                "params": {"task_id": task["id"], "agent_id": agent},
+            },
+        )
+        claimed = (await response.json())["result"]
+
+        assert response.status == 200
+        assert claimed["status"]["state"] == "working"
+        assert "started_at" in claimed["metadata"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_by_other_agent_is_forbidden_and_names_assignee(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client)
+        agent = task["metadata"]["assigned_agent"]
+
+        response = await client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "12",
+                "method": "tasks/claim",
+                "params": {"task_id": task["id"], "agent_id": "someone-else"},
+            },
+        )
+
+        assert response.status == 403
+        assert agent in await response.text()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_complete_by_other_agent_is_forbidden_and_names_assignee(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client)
+        agent = task["metadata"]["assigned_agent"]
+
+        response = await client.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": "13",
+                "method": "tasks/complete",
+                "params": {
+                    "task_id": task["id"],
+                    "result": "done",
+                    "completing_agent": "someone-else",
+                },
+            },
+        )
+
+        assert response.status == 403
+        assert agent in await response.text()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_send_with_target_agent_assigns_that_agent_and_stays_submitted(runtime_settings) -> None:
+    client = await build_client(runtime_settings)
+    try:
+        task = await _send_task(client, target_agent="radio-session")
+
+        assert task["status"]["state"] == "submitted"
+        assert task["metadata"]["assigned_agent"] == "radio-session"
+    finally:
+        await client.close()

@@ -185,7 +185,7 @@ Delegate a task to another agent via the A2A hub. The task is created `submitted
 | `description` | string | Yes | Task description |
 | `requesting_agent` | string | No | Agent source (default: `unknown`, usually `N3RV_AGENT_SOURCE`) |
 | `target_agent` | string | No | Explicit handoff: assign this agent id (from its `N3RV_AGENT_ID`) instead of routing by skill |
-| `allow_offline` | bool | No | Queue even when `target_agent` is not registered. Default `false`: an unknown/stale target is rejected with the list of live ids |
+| `allow_offline` | bool | No | Queue for an id that has **never registered**. Default `false`: an unknown id is rejected with the list of known ids. A registered id that is merely idle (no recent heartbeat) is always accepted; the task carries `target_stale` and `target_last_seen` in its metadata |
 
 Returns: Task object with `id`, `status`, `assigned_agent`. State is `submitted` until claimed.
 
@@ -224,6 +224,8 @@ List hub agent ids registered for discovery. A session registers itself (and hea
 | `include_stale` | bool | No | Also return ids whose heartbeat is older than `N3RV_AGENT_TTL_SECONDS`, flagged `stale` |
 
 Returns: `{"agents": [{"agent_id", "started_at", "last_seen", "stale"}]}`.
+
+`stale` is a **presence hint, not a routing verdict**: an idle session is still addressable, because you delegate to it precisely while it is idle. Records are collected only past `N3RV_AGENT_RETENTION_DAYS` (default 30), and `agents/unregister` removes one explicitly.
 
 ---
 

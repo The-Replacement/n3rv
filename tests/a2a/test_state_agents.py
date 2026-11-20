@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -54,8 +56,27 @@ def test_invalid_agent_id_rejected(store: HubStateStore) -> None:
         store.register_agent("../escape")
 
 
-def test_prune_only_when_over_cap(store: HubStateStore) -> None:
+def test_prune_collects_records_past_retention(store: HubStateStore) -> None:
+    store.register_agent("radio-session")
+    path = store.agents_dir / "radio-session.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["last_seen"] = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert store.prune_agents(retention_seconds=30 * 86400) == 1
+    assert store.list_agents(ttl_seconds=120, include_stale=True) == []
+
+
+def test_prune_keeps_stale_but_recent_records(store: HubStateStore) -> None:
+    """Idle is not gone: a stale record inside the retention window survives."""
     store.register_agent("radio-session")
 
-    assert store.prune_agents(ttl_seconds=-1, max_records=256) == 0
-    assert store.prune_agents(ttl_seconds=-1, max_records=0) == 1
+    assert store.prune_agents(retention_seconds=30 * 86400) == 0
+    assert store.list_agents(ttl_seconds=0, include_stale=True)[0][0].agent_id == "radio-session"
+
+
+def test_prune_disabled_when_retention_is_not_positive(store: HubStateStore) -> None:
+    store.register_agent("radio-session")
+
+    assert store.prune_agents(retention_seconds=0) == 0
+    assert store.list_agents(ttl_seconds=120, include_stale=True) != []

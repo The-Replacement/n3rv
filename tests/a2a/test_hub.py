@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -345,16 +348,57 @@ async def test_delegate_allow_offline_queues_unknown_target(runtime_settings) ->
 
 
 @pytest.mark.asyncio
-async def test_delegate_to_stale_target_rejected(runtime_settings, monkeypatch) -> None:
+async def test_delegate_to_idle_known_target_is_accepted(runtime_settings, monkeypatch) -> None:
+    """A registered id stays addressable after it goes stale (n3rv#38).
+
+    TTL=0 makes every record stale immediately, so the registry says the target
+    is idle while the routing decision must still accept the handoff: an
+    address that expires is not an address. The staleness is reported on the
+    task instead of being turned into a rejection.
+    """
     client = await build_client(runtime_settings)
     try:
         await _register(client, "radio-session")
         monkeypatch.setenv("N3RV_AGENT_TTL_SECONDS", "0")
+
+        listed = await client.post(
+            "/rpc",
+            json={"jsonrpc": "2.0", "id": "23a", "method": "agents/list", "params": {}},
+        )
+        assert (await listed.json())["result"]["agents"] == []
+
+        task = await _send_task(client, target_agent="radio-session")
+
+        assert task["status"]["state"] == "submitted"
+        assert task["metadata"]["assigned_agent"] == "radio-session"
+        assert task["metadata"]["target_stale"] is True
+        assert task["metadata"]["target_last_seen"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_retention_pruned_target_is_rejected(runtime_settings) -> None:
+    """The address disappears only once the record is collected, not when idle."""
+    client = await build_client(runtime_settings)
+    try:
+        await _register(client, "radio-session")
+        record_path = runtime_settings.paths.hub_state_dir / "agents" / "radio-session.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["last_seen"] = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+
+        listed = await client.post(
+            "/rpc",
+            json={"jsonrpc": "2.0", "id": "23b", "method": "agents/list", "params": {"include_stale": True}},
+        )
+        assert (await listed.json())["result"]["agents"] == []
+
         response = await client.post(
             "/rpc",
             json={
                 "jsonrpc": "2.0",
-                "id": "23",
+                "id": "23c",
                 "method": "tasks/send",
                 "params": {
                     "requesting_agent": "claude",
@@ -367,5 +411,6 @@ async def test_delegate_to_stale_target_rejected(runtime_settings, monkeypatch) 
         )
 
         assert response.status == 400
+        assert "radio-session" in await response.text()
     finally:
         await client.close()

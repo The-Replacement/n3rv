@@ -34,6 +34,16 @@ def _agent_ttl_seconds() -> float:
         return 120.0
 
 
+def _agent_retention_seconds() -> float:
+    """Registry retention in seconds (``N3RV_AGENT_RETENTION_DAYS``, default 30)."""
+    raw = os.environ.get("N3RV_AGENT_RETENTION_DAYS", "")
+    try:
+        days = float(raw) if raw else 30.0
+    except ValueError:
+        days = 30.0
+    return days * 86400.0
+
+
 def _format_sse_event(data: dict, event_type: str = "task-status") -> bytes:
     payload = json.dumps(data, separators=(",", ":"))
     return f"event: {event_type}\ndata: {payload}\n\n".encode()
@@ -236,21 +246,26 @@ class A2AHub:
         skill_id = str(params["skill_id"]) if params.get("skill_id") else None
         metadata = dict(params.get("metadata") or {})
 
-        # Explicit handoff validates the target against the live registry so a
-        # typo fails here instead of parking a task nobody will ever see
-        # (n3rv#36). allow_offline opts into queueing for a session that is not
-        # registered yet.
+        # Explicit handoff validates the target against the registry so a typo
+        # fails here instead of parking a task nobody will ever see (n3rv#36).
+        # An id that is registered but has not touched the hub recently is only
+        # idle, not gone: you delegate precisely because the session is idle, so
+        # a registered address always accepts work and the staleness travels
+        # with the task as metadata (n3rv#38). allow_offline remains the escape
+        # hatch for a session that has never registered at all.
         target_agent = params.get("target_agent")
-        if target_agent and not bool(params.get("allow_offline", False)):
-            ttl = _agent_ttl_seconds()
-            live = {
-                record.agent_id
-                for record, stale in self.state.list_agents(ttl_seconds=ttl, include_stale=False)
-                if not stale
-            }
+        if target_agent:
             target = str(target_agent).strip().lower()
-            if target not in live:
-                raise web.HTTPBadRequest(text=f"unknown or stale agent {target!r}; live ids: {sorted(live)[:20]}")
+            known = {
+                record.agent_id: (record, stale)
+                for record, stale in self.state.list_agents(ttl_seconds=_agent_ttl_seconds(), include_stale=True)
+            }
+            if target not in known and not bool(params.get("allow_offline", False)):
+                raise web.HTTPBadRequest(text=f"unknown agent {target!r}; known ids: {sorted(known)[:20]}")
+            if target in known:
+                record, stale = known[target]
+                metadata["target_last_seen"] = record.last_seen.isoformat()
+                metadata["target_stale"] = stale
 
         logger.info(
             "tasks/send from=%s skill=%s desc=%r",
@@ -504,9 +519,8 @@ class A2AHub:
 
     async def agents_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List registered ids; ``include_stale`` flags entries past the TTL."""
+        self.state.prune_agents(retention_seconds=_agent_retention_seconds())
         ttl = _agent_ttl_seconds()
-        if ttl > 0:
-            self.state.prune_agents(ttl_seconds=ttl * 4)
         include_stale = bool(params.get("include_stale", False))
         agents = self.state.list_agents(ttl_seconds=ttl, include_stale=include_stale)
         return {"agents": [self._agent_payload(record, stale=stale) for record, stale in agents]}

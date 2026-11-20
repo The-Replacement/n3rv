@@ -56,7 +56,14 @@ def result_payload(
 
 
 def hub_rpc(hub_url: str, method: str, params: dict) -> dict:
-    """Make a JSON-RPC call to the hub and return the result dict."""
+    """Make a JSON-RPC call to the hub and return the result dict.
+
+    A transport failure is ``HubUnavailable``. An HTTP error status is
+    ``HubError`` carrying the hub's own message: that text is where the
+    actionable detail lives (for example the live agent ids a rejected
+    ``target_agent`` should have used), so it must survive the MCP boundary
+    instead of collapsing into a bare status error.
+    """
     try:
         resp = httpx.post(
             f"{hub_url}/rpc",
@@ -68,10 +75,17 @@ def hub_rpc(hub_url: str, method: str, params: dict) -> dict:
             },
             timeout=10.0,
         )
-        resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise Exception(f"HubUnavailable: {exc}") from exc
-    data = resp.json()
+
+    if resp.status_code >= 400:
+        detail = resp.text.strip() or resp.reason_phrase or "no detail"
+        raise Exception(f"HubError {resp.status_code}: {detail}")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise Exception(f"HubError: hub returned a non-JSON response for {method} ({resp.status_code})") from exc
     if "error" in data:
         raise Exception(f"HubError: {data['error'].get('message', data['error'])}")
     return data["result"]

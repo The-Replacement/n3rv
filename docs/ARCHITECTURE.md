@@ -42,7 +42,7 @@ For the full concept map including LCL (knowledge layer), Entry Plug (context), 
        ▼              ▼                  ▼                    ▼
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
 │ n3rv-memory  │ │  n3rv-hub    │ │ n3rv-exec    │ │ n3rv-code-graph  │
-│  (12 tools)  │ │  (6 tools)   │ │  (8 tools)   │ │   (6 tools)      │
+│  (12 tools)  │ │  (7 tools)   │ │  (8 tools)   │ │   (6 tools)      │
 │ memory_save  │ │ delegate_task│ │ exec_lint    │ │ code_graph_index │
 │ memory_search│ │ list_pending │ │ exec_test    │ │ code_graph_explore│
 │ memory_recall│ │ check_pending│ │ exec_affected│ │ code_graph_symbols│
@@ -112,6 +112,9 @@ aiohttp web server providing JSON-RPC 2.0 interface for task delegation.
 | `tasks/claim` | Assignee claims a submitted task → `working` + `started_at` |
 | `tasks/complete` | Mark task as completed |
 | `tasks/sendSubscribe` | SSE stream for task status updates |
+| `agents/register` | Register or heartbeat an agent id (upsert) |
+| `agents/list` | List live agent ids; `include_stale` flags expired ones |
+| `agents/unregister` | Remove an agent id |
 
 **Task Lifecycle:**
 
@@ -208,13 +211,14 @@ Exposes 12 tools to agents via FastMCP. Tools are available unless `N3RV_MEMORY_
 
 ### Hub Server (`src/n3rv/mcp/hub_server.py`)
 
-Exposes 6 tools for task delegation via FastMCP.
+Exposes 7 tools for task delegation via FastMCP.
 
 | Tool | Description |
 |------|-------------|
 | `delegate_task` | Delegate by skill_id, or to an explicit `target_agent` |
 | `list_pending_tasks` | List incomplete tasks for an agent |
 | `check_pending_tasks` | Check current agent's pending tasks |
+| `list_agents` | Discover live agent ids (heartbeat registry, stale flagged) |
 | `claim_task` | Claim a submitted task → `working` + `started_at` |
 | `complete_task` | Mark task as completed (identity derived from env) |
 | `get_task` | Get task state by ID |
@@ -352,8 +356,9 @@ The hub (`src/n3rv/a2a/hub.py`) routes tasks by `skill_id` via `delegate_task` /
 - **Addressing:** `delegate_task(target_agent=...)` hands work to a specific id. A
   session distinguishes itself with `N3RV_AGENT_ID` (falling back to
   `N3RV_AGENT_SOURCE`); without an id override every session on a source shares one
-  identity. There is no live-id registry: an unset or misspelled target simply
-  leaves the task `submitted`.
+  identity. A heartbeat registry (`agents/register` / `agents/list`) makes live ids
+  discoverable; an unknown or stale target is rejected with the live-id list unless
+  `allow_offline` is set. Staleness is `N3RV_AGENT_TTL_SECONDS` (default 120).
 - **Lifecycle:** a delegated task is `submitted`, not `working`; the assignee calls
   `claim_task` (→ `working` + `started_at`) and then `complete_task`. Identity is
   advisory — the hub is localhost-only and unauthenticated.

@@ -11,11 +11,12 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from n3rv.config import RuntimeSettings
-from n3rv.models.a2a import TaskState
+from n3rv.models.a2a import AgentRecord, TaskState
 
 logger = logging.getLogger("n3rv.a2a.state")
 
 _TASK_ID_RE = re.compile(r"^task-[a-f0-9]{32}$")
+_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class DelegationArtifact(BaseModel):
@@ -85,6 +86,8 @@ class HubStateStore:
         self.settings = settings
         self.tasks_dir = settings.paths.hub_state_dir / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        self.agents_dir = settings.paths.hub_state_dir / "agents"
+        self.agents_dir.mkdir(parents=True, exist_ok=True)
         self._task_events: dict[str, asyncio.Event] = {}
 
     def _get_event(self, task_id: str) -> asyncio.Event:
@@ -144,6 +147,79 @@ class HubStateStore:
         if event is not None:
             event.set()
         return updated
+
+    def _agent_path(self, agent_id: str) -> Path:
+        """Build path for an agent_id. Rejects ids outside [a-z0-9][a-z0-9._-]*."""
+        if not _AGENT_ID_RE.match(agent_id):
+            raise ValueError(f"Invalid agent_id format: {agent_id!r}")
+        return self.agents_dir / f"{agent_id}.json"
+
+    def load_agent(self, agent_id: str) -> AgentRecord | None:
+        path = self._agent_path(agent_id.strip().lower())
+        if not path.exists():
+            return None
+        try:
+            return AgentRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("Failed to load agent: %s", path)
+            return None
+
+    def register_agent(self, agent_id: str, *, metadata: dict | None = None) -> AgentRecord:
+        """Upsert an agent record; a repeat call is a heartbeat (started_at preserved)."""
+        agent_id = agent_id.strip().lower()
+        now = datetime.now(UTC)
+        path = self._agent_path(agent_id)
+        existing = self.load_agent(agent_id)
+        record = AgentRecord(
+            agent_id=agent_id,
+            started_at=existing.started_at if existing else now,
+            last_seen=now,
+            metadata=metadata if metadata is not None else (existing.metadata if existing else {}),
+        )
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(record.model_dump_json(indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return record
+
+    def list_agents(self, *, ttl_seconds: float, include_stale: bool = False) -> list[tuple[AgentRecord, bool]]:
+        """Return (record, stale) pairs; stale means last_seen older than the TTL."""
+        now = datetime.now(UTC)
+        result: list[tuple[AgentRecord, bool]] = []
+        for agent_file in self.agents_dir.glob("*.json"):
+            try:
+                record = AgentRecord.model_validate_json(agent_file.read_text(encoding="utf-8"))
+            except Exception:
+                logger.exception("Failed to load agent: %s", agent_file)
+                continue
+            stale = (now - record.last_seen).total_seconds() > ttl_seconds
+            if stale and not include_stale:
+                continue
+            result.append((record, stale))
+        return sorted(result, key=lambda pair: pair[0].agent_id)
+
+    def prune_agents(self, *, ttl_seconds: float, max_records: int = 256) -> int:
+        """Bound the registry: delete records idle beyond the TTL once over the cap."""
+        records = list(self.agents_dir.glob("*.json"))
+        if len(records) <= max_records:
+            return 0
+        now = datetime.now(UTC)
+        removed = 0
+        for agent_file in records:
+            try:
+                record = AgentRecord.model_validate_json(agent_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if (now - record.last_seen).total_seconds() > ttl_seconds:
+                agent_file.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
+    def unregister_agent(self, agent_id: str) -> bool:
+        path = self._agent_path(agent_id.strip().lower())
+        if path.exists():
+            path.unlink()
+            return True
+        return False
 
     def _task_path(self, task_id: str) -> Path:
         """Build path for a task_id. Validates format (task-[32 hex chars])."""

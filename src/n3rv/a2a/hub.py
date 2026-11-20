@@ -18,11 +18,20 @@ from n3rv.config import RuntimeSettings
 from n3rv.init.registry import SkillRegistry
 from n3rv.mcp.memory_service import MemoryService
 from n3rv.mcp.shared import ensure_runtime_directories, resolve_runtime_settings
-from n3rv.models.a2a import TaskState
+from n3rv.models.a2a import AgentRecord, TaskState
 
 logger = logging.getLogger("n3rv.hub")
 
 HUB_KEY = web.AppKey("hub", "A2AHub")
+
+
+def _agent_ttl_seconds() -> float:
+    """Registry TTL in seconds (``N3RV_AGENT_TTL_SECONDS``, default 120)."""
+    raw = os.environ.get("N3RV_AGENT_TTL_SECONDS", "")
+    try:
+        return float(raw) if raw else 120.0
+    except ValueError:
+        return 120.0
 
 
 def _format_sse_event(data: dict, event_type: str = "task-status") -> bytes:
@@ -185,6 +194,12 @@ class A2AHub:
                 result = await self.tasks_claim(params)
             elif method == "tasks/complete":
                 result = await self.tasks_complete(params)
+            elif method == "agents/register":
+                result = await self.agents_register(params)
+            elif method == "agents/list":
+                result = await self.agents_list(params)
+            elif method == "agents/unregister":
+                result = await self.agents_unregister(params)
             else:
                 logger.warning("Unknown RPC method: %s", method)
                 return web.json_response(
@@ -220,6 +235,22 @@ class A2AHub:
         requesting_agent = str(params.get("requesting_agent", "unknown"))
         skill_id = str(params["skill_id"]) if params.get("skill_id") else None
         metadata = dict(params.get("metadata") or {})
+
+        # Explicit handoff validates the target against the live registry so a
+        # typo fails here instead of parking a task nobody will ever see
+        # (n3rv#36). allow_offline opts into queueing for a session that is not
+        # registered yet.
+        target_agent = params.get("target_agent")
+        if target_agent and not bool(params.get("allow_offline", False)):
+            ttl = _agent_ttl_seconds()
+            live = {
+                record.agent_id
+                for record, stale in self.state.list_agents(ttl_seconds=ttl, include_stale=False)
+                if not stale
+            }
+            target = str(target_agent).strip().lower()
+            if target not in live:
+                raise web.HTTPBadRequest(text=f"unknown or stale agent {target!r}; live ids: {sorted(live)[:20]}")
 
         logger.info(
             "tasks/send from=%s skill=%s desc=%r",
@@ -459,6 +490,45 @@ class A2AHub:
             len(tasks),
         )
         return {"tasks": [t.to_jsonrpc_result() for t in tasks]}
+
+    async def agents_register(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Upsert a live agent id; a repeat call is a heartbeat."""
+        agent_id = str(params.get("agent_id", "")).strip().lower()
+        if not agent_id:
+            raise web.HTTPBadRequest(text="agent_id is required")
+        try:
+            record = self.state.register_agent(agent_id, metadata=params.get("metadata"))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        return self._agent_payload(record, stale=False)
+
+    async def agents_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List registered ids; ``include_stale`` flags entries past the TTL."""
+        ttl = _agent_ttl_seconds()
+        if ttl > 0:
+            self.state.prune_agents(ttl_seconds=ttl * 4)
+        include_stale = bool(params.get("include_stale", False))
+        agents = self.state.list_agents(ttl_seconds=ttl, include_stale=include_stale)
+        return {"agents": [self._agent_payload(record, stale=stale) for record, stale in agents]}
+
+    async def agents_unregister(self, params: dict[str, Any]) -> dict[str, Any]:
+        agent_id = str(params.get("agent_id", "")).strip().lower()
+        if not agent_id:
+            raise web.HTTPBadRequest(text="agent_id is required")
+        try:
+            removed = self.state.unregister_agent(agent_id)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        return {"agent_id": agent_id, "removed": removed}
+
+    @staticmethod
+    def _agent_payload(record: AgentRecord, *, stale: bool) -> dict[str, Any]:
+        return {
+            "agent_id": record.agent_id,
+            "started_at": record.started_at.isoformat(),
+            "last_seen": record.last_seen.isoformat(),
+            "stale": stale,
+        }
 
     async def tasks_claim(self, params: dict[str, Any]) -> dict[str, Any]:
         """Claim a routed task: SUBMITTED -> WORKING for the assignee.

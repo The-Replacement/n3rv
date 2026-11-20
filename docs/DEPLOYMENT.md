@@ -151,6 +151,7 @@ n3rv org protect                              # apply (required checks, 1 approv
 | `N3RV_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `N3RV_AGENT_SOURCE` | `opencode` | Agent identifier for memory scope and hub operations |
 | `N3RV_AGENT_ID` | — | Per-session hub identity; overrides `N3RV_AGENT_SOURCE` for `delegate_task`/`claim_task`/`complete_task` targeting |
+| `N3RV_AGENT_TTL_SECONDS` | `120` | Hub agent-registry staleness window; `agents/list` flags ids whose heartbeat is older, and they are not routed to by default |
 | `N3RV_HUB_URL` | `http://127.0.0.1:19820` | Hub URL for MCP delegation |
 | `N3RV_MEMORY_PROFILE` | `full` | Memory tool availability (`full` or `safe`) |
 | `N3RV_EXEC_DEBOUNCE_MS` | `300` | Watcher debounce (exec + code-graph) |
@@ -195,7 +196,7 @@ Machine
 ### Task Flow
 
 1. Agent A in Project A delegates: `delegate_task(skill_id="implementation", description="fix bug #42")` or, for an explicit session handoff, `delegate_task(target_agent="radio-session", ...)` (the target sets `N3RV_AGENT_ID=radio-session`)
-2. Hub assigns an agent (by skill via `TaskRouter`, or the named `target_agent`) and leaves the task `submitted` — routing is not starting
+2. Hub assigns an agent (by skill via `TaskRouter`, or the named `target_agent`) and leaves the task `submitted` — routing is not starting. A named target must be registered (`agents/list`); pass `allow_offline=True` to queue for a session that is not up yet. Sessions register automatically when their hub MCP server starts and heartbeat on tool use
 3. Agent B polls: `check_pending_tasks()` → sees the task
 4. Agent B claims: `claim_task(task_id)` → `working` + `started_at`
 5. Agent B completes: `complete_task(task_id, result)` → hub marks COMPLETED (completer identity derived from `N3RV_AGENT_ID`/`N3RV_AGENT_SOURCE`)

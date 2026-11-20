@@ -98,6 +98,12 @@ mcp:
     environment: null
     description: ''
     disabled: false
+  - name: n3rv-hub
+    type: local
+    command: [n3rv-hub]
+    environment:
+      N3RV_AGENT_SOURCE: opencode
+      N3RV_AGENT_ID: n3rv
 deployment:
   target: none
 tiers:
